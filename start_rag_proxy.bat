@@ -1,2 +1,2 @@
 @echo off
-start "" /B "d:\Nam_Work\yolo\rag\venv\Scripts\python.exe" "d:\Nam_Work\yolo\rag\rag_proxy.py"
+start "" /B "D:\Code\yolo\Claude_Code\LocalHelpBot\venv\Scripts\python.exe" "D:\Code\yolo\Claude_Code\LocalHelpBot\core\proxy.py"

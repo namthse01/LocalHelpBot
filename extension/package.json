@@ -1,0 +1,50 @@
+{
+  "name": "local-help-bot-manager",
+  "displayName": "Local Help Bot Manager",
+  "description": "Manages the LocalHelpBot RAG Proxy and Continue configuration",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "*"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "localhelpbot.startProxy",
+        "title": "LocalHelpBot: Start Proxy"
+      },
+      {
+        "command": "localhelpbot.stopProxy",
+        "title": "LocalHelpBot: Stop Proxy"
+      },
+      {
+        "command": "localhelpbot.startDiscord",
+        "title": "LocalHelpBot: Start Discord Bot"
+      },
+      {
+        "command": "localhelpbot.stopDiscord",
+        "title": "LocalHelpBot: Stop Discord Bot"
+      },
+      {
+        "command": "localhelpbot.configureContinue",
+        "title": "LocalHelpBot: Configure Continue"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.x",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.x"
+  }
+}

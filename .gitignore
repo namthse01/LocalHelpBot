@@ -1,0 +1,52 @@
+# ── Python ────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual environment — KHÔNG commit, clone xong tự tạo lại
+venv/
+env/
+.venv/
+
+# ── ChromaDB vector store ─────────────────
+# Database được build từ docs/ — không cần commit
+# Chạy: python embed.py để tạo lại
+cad_db/
+
+# ── Output / data runtime ─────────────────
+output.json
+raw_data.json
+
+# ── Avatars nhân sự ───────────────────────
+# Ảnh cá nhân — không push lên git công khai
+personal_avatar/
+
+# ── Continue IDE data (local only) ────────
+# Các folder này do Continue extension tự sinh ra
+index/
+sessions/
+types/
+config.ts
+tsconfig.json
+package.json
+
+# ── Logs & temp ───────────────────────────
+*.log
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db
+
+# ── Secrets / keys ────────────────────────
+.env
+.env.*
+secrets.json
+*_secret*
+*_key*
+
+# ── Windows shortcuts ─────────────────────
+# start_rag_proxy.vbs là file chạy ẩn trên Windows
+# Có thể giữ .bat, bỏ .vbs tùy
+# start_rag_proxy.vbs

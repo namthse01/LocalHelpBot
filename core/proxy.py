@@ -4,7 +4,9 @@ RAG-aware + Agentic Ollama proxy  — port 11435
 
 import json
 import multiprocessing
+import subprocess
 import sys
+import threading
 import urllib.request
 import urllib.error
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -136,6 +138,61 @@ def _init_orchestrator():
 
 orchestrator = _init_orchestrator()
 
+# ── Discord subprocess management ────────────────────────────
+_discord_proc = None
+
+def _start_discord():
+    global _discord_proc
+    if _discord_proc and _discord_proc.poll() is None:
+        return False, "Discord is already running"
+    bot_root = Path(__file__).parent.parent
+    python_exe = bot_root / "venv" / "Scripts" / "python.exe"
+    gateway_script = bot_root / "core" / "discord_gateway.py"
+    _discord_proc = subprocess.Popen(
+        [str(python_exe), str(gateway_script)],
+        cwd=str(bot_root),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    return True, "Discord connected"
+
+def _stop_discord():
+    global _discord_proc
+    if _discord_proc and _discord_proc.poll() is None:
+        _discord_proc.terminate()
+        _discord_proc.wait(timeout=5)
+        _discord_proc = None
+        return True, "Discord disconnected"
+    _discord_proc = None
+    return False, "Discord is not running"
+
+def _discord_status():
+    return _discord_proc is not None and _discord_proc.poll() is None
+
+# ── Shutdown management ──────────────────────────────────────
+_server_ref = None
+_last_heartbeat = 0.0
+_heartbeat_active = False
+HEARTBEAT_TIMEOUT = 15  # seconds without heartbeat → shutdown
+
+def _shutdown_all():
+    _stop_discord()
+    print("[shutdown] All services stopped. Exiting.", flush=True)
+    if _server_ref:
+        _server_ref.shutdown()
+    sys.exit(0)
+
+def _heartbeat_watchdog():
+    """Background thread: shutdown if no heartbeat received for HEARTBEAT_TIMEOUT seconds."""
+    import time
+    global _last_heartbeat, _heartbeat_active
+    while True:
+        time.sleep(5)
+        if _heartbeat_active and (time.time() - _last_heartbeat) > HEARTBEAT_TIMEOUT:
+            print(f"[heartbeat] No UI heartbeat for {HEARTBEAT_TIMEOUT}s — shutting down.", flush=True)
+            _shutdown_all()
+            break
+
 class ProxyHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         print(f"[proxy] {fmt % args}", flush=True)
@@ -180,6 +237,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 "tasks": AUTOMATION_TASKS,
                 "providers": MODEL_PROVIDERS
             }).encode())
+            return
+
+        if self.path == "/api/discord/status":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({"connected": _discord_status()}).encode())
             return
 
         if self.path == "/api/tags":
@@ -234,6 +299,47 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(json.dumps({"error": str(e)}).encode())
                 return
+
+        if path == "/api/discord/connect":
+            ok, msg = _start_discord()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({"success": ok, "message": msg, "connected": _discord_status()}).encode())
+            print(f"[discord] {msg}", flush=True)
+            return
+
+        if path == "/api/discord/disconnect":
+            ok, msg = _stop_discord()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({"success": ok, "message": msg, "connected": _discord_status()}).encode())
+            print(f"[discord] {msg}", flush=True)
+            return
+
+        if path == "/api/heartbeat":
+            import time
+            global _last_heartbeat, _heartbeat_active
+            _last_heartbeat = time.time()
+            _heartbeat_active = True
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": "ok"}).encode())
+            return
+
+        if path == "/api/shutdown":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": "shutting_down"}).encode())
+            threading.Thread(target=_shutdown_all, daemon=True).start()
+            return
 
         model = payload.get("model", "")
 
@@ -349,7 +455,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
             pass
 
 def main():
+    global _server_ref
     server = HTTPServer(("localhost", PROXY_PORT), ProxyHandler)
+    _server_ref = server
     print(f"[rag-proxy] http://localhost:{PROXY_PORT}", flush=True)
     print(f"  Embed model   : mxbai-embed-large (Ollama)", flush=True)
     print(f"  cad-rag       -> RAG + {REAL_MODEL}", flush=True)
@@ -359,6 +467,8 @@ def main():
     print(f"  browser-agent -> local Chrome/Edge cookies & storage reader", flush=True)
     print(f"  deep-agent    -> deep reasoning [{LARGE_MODEL}]", flush=True)
     print(f"  auto-agent    -> Smart Orchestrator (delegates to sub-agents)", flush=True)
+    print(f"  [auto-shutdown] Proxy will stop when UI tab is closed.", flush=True)
+    threading.Thread(target=_heartbeat_watchdog, daemon=True).start()
     server.serve_forever()
 
 if __name__ == "__main__":

@@ -35,12 +35,58 @@ ollama pull mxbai-embed-large
 ollama pull glm-4.7-flash
 ```
 
-**Chọn model theo RAM:**
-- **8GB RAM**: dùng `llama3.2:3b` hoặc `qwen2.5:7b`
-- **16GB RAM**: dùng `qwen3.5` hoặc `qwen2.5-coder:7b`
-- **32GB+ RAM / có GPU**: dùng `glm-4.7-flash` hoặc model lớn hơn
+**Tìm model phù hợp nhất cho máy của bạn:**
 
-Sau khi pull xong, kiểm tra bằng:
+Mỗi máy có cấu hình khác nhau (RAM, GPU, CPU) nên không thể dùng chung một model. Cách tìm model tốt nhất:
+
+1. **Kiểm tra tài nguyên máy:**
+
+```bash
+# Windows — xem RAM & GPU
+systeminfo | findstr /C:"Total Physical Memory"
+nvidia-smi          # nếu có GPU NVIDIA
+```
+
+```bash
+# Linux/Mac
+free -h             # RAM
+nvidia-smi          # GPU NVIDIA
+```
+
+2. **Bảng chọn model theo phần cứng:**
+
+| RAM | GPU VRAM | Chat Model (khuyến nghị) | Deep Model |
+|---|---|---|---|
+| 8GB | Không có | `llama3.2:3b` hoặc `qwen2.5:3b` | _(bỏ trống)_ |
+| 8GB | 4-6GB | `qwen2.5:7b` | _(bỏ trống)_ |
+| 16GB | Không có | `qwen3.5` hoặc `gemma3:12b` | _(bỏ trống)_ |
+| 16GB | 8GB+ | `qwen2.5-coder:7b` hoặc `qwen3.5` | `qwen3.5` |
+| 32GB+ | 12GB+ | `qwen3.5` hoặc `glm-4.7-flash` | `glm-4.7-flash` |
+| 64GB+ | 24GB+ | `glm-4.7-flash` hoặc `qwen2.5:32b` | `llama3.3:70b` |
+
+3. **Benchmark nhanh — so sánh tốc độ trên máy bạn:**
+
+```bash
+# Pull 2-3 model ứng viên rồi test
+ollama pull qwen3.5
+ollama pull gemma3:12b
+
+# Đo tốc độ sinh text (tokens/giây)
+ollama run qwen3.5 "Giải thích machine learning trong 100 từ" --verbose
+ollama run gemma3:12b "Giải thích machine learning trong 100 từ" --verbose
+```
+
+Xem dòng `eval rate` ở cuối output — model nào cho **tokens/s cao hơn** mà vẫn trả lời chất lượng thì chọn model đó.
+
+> **Nguyên tắc chung:** Model chạy dưới **5 tokens/s** sẽ rất chậm khi dùng thực tế. Nên chọn model cho tốc độ tối thiểu **10 tokens/s** trở lên.
+
+4. **Model embedding (bắt buộc cho RAG):** Luôn dùng `mxbai-embed-large` — chỉ 669MB, chạy được trên mọi máy.
+
+```bash
+ollama pull mxbai-embed-large
+```
+
+Sau khi chọn xong, kiểm tra các model đã pull:
 
 ```bash
 ollama list
@@ -148,28 +194,21 @@ Lệnh này sẽ:
 
 ### Bước 6: Khởi chạy hệ thống
 
-**Windows:**
+> **Lưu ý:** Hệ thống **không tự chạy** khi mở VS Code. Bạn cần khởi động thủ công bằng một trong các cách bên dưới.
+
+Mở terminal trong thư mục project rồi gõ:
 
 ```bash
 .\start_localhelpbot.bat
 ```
 
-Script này sẽ tự động:
-1. Khởi chạy **Agentic Proxy** trên `http://localhost:11435`
-2. Khởi chạy **Discord Gateway** (nếu đã cấu hình token)
-3. Mở **Web UI** trên trình duyệt tại `http://localhost:11435`
+Có thể dùng terminal bên ngoài (cmd, PowerShell) hoặc terminal tích hợp trong VS Code — đều được.
 
-**Linux/Mac (chạy thủ công):**
+Proxy sẽ khởi chạy và tự mở Web UI trên trình duyệt tại `http://localhost:11435`.
 
-```bash
-# Terminal 1: Proxy + Web UI
-python core/proxy.py
-
-# Terminal 2 (tuỳ chọn): Discord Gateway
-python core/discord_gateway.py
-```
-
-Sau đó mở trình duyệt tại `http://localhost:11435`.
+> **Tắt:** Đóng tab UI trên trình duyệt → hệ thống tự tắt toàn bộ sau 15 giây. Hoặc nhấn nút **power off** trên góc phải UI để tắt ngay.
+>
+> **Discord / Dịch vụ bên thứ 3:** Không tự kết nối khi khởi động. Vào Web UI → tab **Connect** → nhấn nút **Connect** để kết nối khi cần.
 
 ---
 
@@ -183,7 +222,7 @@ Giao diện Web có 5 tab:
 |---|---|
 | **Chat** | Chat với AI. Chọn agent từ dropdown rồi nhắn tin |
 | **Agents** | Xem và chỉnh sửa system prompt, model của từng agent |
-| **Connect** | Cấu hình Discord Bot Token, Server ID, Allowed Channels |
+| **Connect** | Cấu hình và kết nối Discord Bot (nhấn Connect để bật, Disconnect để tắt) |
 | **Daily Tasks** | Quản lý các tác vụ tự động (automation scheduler) |
 | **Change Mode** | Chuyển đổi giữa Cloud API và Local Ollama |
 
@@ -315,7 +354,7 @@ pip install chromadb pycryptodome pywin32 langchain-core langchain-text-splitter
 # 5. Build RAG
 python data/indexer.py
 
-# 6. Chạy
+# 6. Chạy (mở terminal trong project folder)
 .\start_localhelpbot.bat
 # Mở http://localhost:11435
 ```

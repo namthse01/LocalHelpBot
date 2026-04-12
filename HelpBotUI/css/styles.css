@@ -1,0 +1,9 @@
+body { background-color: #0f172a; color: #e2e8f0; }
+.tab-content { display: none !important; }
+.tab-content.active { display: block !important; }
+.tab-content.active.flex-layout { display: flex !important; }
+.message-user { background-color: #1e293b; border-radius: 15px 15px 0 15px; }
+.message-bot { background-color: #334155; border-radius: 15px 15px 15px 0; }
+.custom-scrollbar::-webkit-scrollbar { width: 6px; }
+.custom-scrollbar::-webkit-scrollbar-track { background: #1e293b; }
+.custom-scrollbar::-webkit-scrollbar-thumb { background: #475569; border-radius: 10px; }

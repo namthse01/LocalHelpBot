@@ -78,66 +78,70 @@ def _recovery_hint(tool_name: str, result: str, has_web: bool) -> str:
     return "\n".join(lines)
 
 
-def _ollama_chat(messages: list) -> str:
-    body = json.dumps({
-        "model":    REAL_MODEL,
-        "messages": messages,
-        "stream":   False,
-        "options":  {"temperature": 0.2, "num_predict": 2048},
-    }).encode()
+import json
+import re
+import sys
+import logging
+from pathlib import Path
+from typing import List, Dict, Any, Optional, Callable
 
-    req = urllib.request.Request(
-        OLLAMA_BASE + "/api/chat",
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST"
-    )
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        data = json.loads(resp.read())
-    return data["message"]["content"]
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from config import OLLAMA_BASE, CHAT_MODEL
+from core.providers import smart_provider
 
+logger = logging.getLogger(__name__)
+
+MAX_TURNS  = 20
+ACTION_RE = re.compile(r"ACTION:\s*(\{.*?\})", re.DOTALL)
+
+_ERROR_SIGNALS = [
+    "ERROR:", "Error:", "Traceback", "SyntaxError", "NameError", "TypeError",
+    "ValueError", "AttributeError", "ImportError", "ModuleNotFoundError",
+    "FileNotFoundError", "PermissionError", "ConnectionError", "TimeoutError",
+    "EXIT: 1", "EXIT: 2", "EXIT: 127", "not found", "cannot find", "No such file", "failed with",
+]
+
+def _is_error(result: str) -> bool:
+    return any(sig in result[:500] for sig in _ERROR_SIGNALS)
+
+def _recovery_hint(tool_name: str, result: str) -> str:
+    return (
+        f"Tool `{tool_name}` returned an error. To fix this, follow this loop:\n"
+        "1. ANALYZE: Read the error. Is it a path issue? A missing dependency? A syntax bug?\n"
+        "2. PLAN: State exactly what you will do to fix it (e.g., 'I will run pip install X').\n"
+        "3. EXECUTE: Use an ACTION to apply the fix.\n"
+        "4. VERIFY: Run the failing command again to confirm it works.\n\n"
+        "Current Error:\n```\n{result}\n```\n"
+        "Please provide your next ACTION."
+    ).format(result=result)
 
 def run_agent(messages: list, tools: dict, stream_cb=None) -> str:
-    """
-    Agentic loop.
-    tools: dict of tool_name -> callable(args_dict) -> str
-    stream_cb: optional callable(text) for streaming intermediate steps
-    Returns final answer string.
-    """
     conversation = list(messages)
-    has_web = "search_web" in tools
-    error_streak = 0          # consecutive error turns
-    MAX_ERROR_STREAK = 4      # give up recovery after this many consecutive errors
+    error_streak = 0
+    MAX_ERROR_STREAK = 5
 
     for turn in range(MAX_TURNS):
-        content = _ollama_chat(conversation)
+        # Use the smart provider (API -> Local fallback)
+        response = smart_provider.chat(conversation)
+        content = response.content
 
-        # Look for ACTION:
         match = ACTION_RE.search(content)
         if not match:
-            # No action → this is the final answer
             return content
 
-        # Show reasoning before the action
         before_action = content[:match.start()].strip()
         if before_action and stream_cb:
             stream_cb(before_action + "\n\n")
 
-        # Parse ACTION JSON
         try:
             args = json.loads(match.group(1))
             tool_name = args.pop("tool")
         except (json.JSONDecodeError, KeyError) as e:
-            tool_result = f"ERROR: Could not parse ACTION JSON: {e}\nRaw: {match.group(1)}"
-            tool_name   = "unknown"
-            args        = {}
+            tool_result = f"ERROR: Could not parse ACTION JSON: {e}"
+            tool_name, args = "unknown", {}
 
-        # Execute tool
         if tool_name not in tools:
-            tool_result = (
-                f"ERROR: Unknown tool '{tool_name}'. "
-                f"Available tools: {', '.join(sorted(tools.keys()))}"
-            )
+            tool_result = f"ERROR: Unknown tool '{tool_name}'. Available: {', '.join(sorted(tools.keys()))}"
         else:
             if stream_cb:
                 stream_cb(f"[{tool_name}] {json.dumps(args, ensure_ascii=False)}\n")
@@ -146,39 +150,20 @@ def run_agent(messages: list, tools: dict, stream_cb=None) -> str:
             except Exception as e:
                 tool_result = f"ERROR executing {tool_name}: {e}"
 
-        # Stream result preview
         if stream_cb:
-            preview = tool_result[:400] + ("..." if len(tool_result) > 400 else "")
-            stream_cb(f"Result:\n{preview}\n\n")
+            stream_cb(f"Result:\n{tool_result[:400]}...\n\n")
 
-        # Build feedback — error-aware
-        is_err = _is_error(tool_result)
-        if is_err:
+        if _is_error(tool_result):
             error_streak += 1
             if error_streak >= MAX_ERROR_STREAK:
-                # Force the model to stop trying and summarize what happened
-                feedback_msg = (
-                    f"Tool `{tool_name}` result:\n```\n{tool_result}\n```\n\n"
-                    f"You have encountered {error_streak} consecutive errors. "
-                    "Stop attempting recovery and give a final answer explaining what went wrong "
-                    "and what you tried. Do NOT use any more ACTION lines."
-                )
+                feedback_msg = f"Too many consecutive errors. Please summarize the problem and stop.\n\nResult: {tool_result}"
             else:
-                feedback_msg = (
-                    f"Tool `{tool_name}` result:\n```\n{tool_result}\n```\n\n"
-                    + _recovery_hint(tool_name, tool_result, has_web)
-                )
+                feedback_msg = _recovery_hint(tool_name, tool_result)
         else:
-            error_streak = 0   # reset on success
-            feedback_msg = (
-                f"Tool result for `{tool_name}`:\n"
-                f"```\n{tool_result}\n```\n\n"
-                "Continue. Use another ACTION if you have more steps, "
-                "or give your final answer (no ACTION lines) when done."
-            )
+            error_streak = 0
+            feedback_msg = f"Tool result for `{tool_name}`:\n```\n{tool_result}\n```\n\nContinue or provide final answer."
 
-        # Feed result back into conversation
         conversation.append({"role": "assistant", "content": content})
         conversation.append({"role": "user", "content": feedback_msg})
 
-    return "ERROR: Max turns reached without a final answer."
+    return "ERROR: Max turns reached."

@@ -1,0 +1,14 @@
+2026-04-12 21:11:43,695 - WARNING - PyNaCl is not installed, voice will NOT be supported
+2026-04-12 21:11:43,695 - WARNING - davey is not installed, voice will NOT be supported
+[2026-04-12 21:11:43] [INFO    ] discord.client: logging in using static token
+2026-04-12 21:11:43,696 - INFO - logging in using static token
+[2026-04-12 21:11:45] [INFO    ] discord.gateway: Shard ID None has connected to Gateway (Session ID: 88c4e1727e71f62e72c6e329d3b31067).
+2026-04-12 21:11:45,536 - INFO - Shard ID None has connected to Gateway (Session ID: 88c4e1727e71f62e72c6e329d3b31067).
+2026-04-12 21:11:47,546 - INFO - Logged in as SourPrince_Bot#1554 (ID: 1485238321541283901)
+2026-04-12 21:11:47,546 - INFO - Monitoring Guilds: [1436893849518866543]
+2026-04-12 21:11:47,546 - INFO - Discord Gateway is active and connected to LocalHelpBot!
+2026-04-12 21:11:47,546 - INFO - Automation Scheduler started.
+[2026-04-12 21:21:19] [INFO    ] discord.gateway: Shard ID None has successfully RESUMED session a8714138d95251119d0a79deca12d93e.
+2026-04-12 21:21:19,109 - INFO - Shard ID None has successfully RESUMED session a8714138d95251119d0a79deca12d93e.
+[2026-04-12 21:14:47] [INFO    ] discord.gateway: Shard ID None has successfully RESUMED session 368210e9a98c0295f1c24c33fd483d32.
+2026-04-12 21:14:47,451 - INFO - Shard ID None has successfully RESUMED session 368210e9a98c0295f1c24c33fd483d32.

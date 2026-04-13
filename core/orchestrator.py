@@ -1,69 +1,155 @@
+"""
+Multi-agent orchestrator — ports claude-code's Task/AgentTool pattern.
+
+One entry point, N specialists. The orchestrator:
+  • Builds a ToolRegistry once (shared).
+  • For each specialist, derives a filtered sub-registry per profile.
+  • Injects <environment>, <tools> catalog and <project_memory> blocks into
+    the system prompt (see core/context.build_system_context).
+  • Exposes a `task` tool (and legacy `delegate` alias) that spawns a nested
+    specialist with an isolated conversation, bubbling progress events up
+    to the parent stream (claude-code's AgentToolProgress pattern).
+"""
+
+from __future__ import annotations
+
 import logging
-from typing import Dict, List, Any, Optional, Callable
+import uuid
+from typing import Any, Callable, Dict, List, Optional
+
 from config import AGENT_PROFILES
+from core.context import build_system_context
 from core.providers import smart_provider
+from core.tool_schema import Tool, ToolRegistry, build_default_registry
 
 logger = logging.getLogger(__name__)
 
-class AgentOrchestrator:
-    def __init__(self, tools_registry: Dict[str, Callable]):
-        self.tools_registry = tools_registry
-        self.active_sessions = {}
 
-    def _runtime_block(self, agent_name: str, profile: Dict[str, Any]) -> str:
+class AgentOrchestrator:
+    def __init__(self, legacy_tools: Optional[Dict[str, Callable]] = None):
+        # Build the canonical registry (wraps legacy callables with schema).
+        self.registry: ToolRegistry = build_default_registry()
+        # Preserve legacy dict for any caller that still passes it through proxy.py.
+        self.tools_registry = legacy_tools or {}
+        self.active_sessions: Dict[str, dict] = {}
+
+    # ──────────────────────────────────────────────────────────
+    #  Runtime metadata
+    # ──────────────────────────────────────────────────────────
+    def _runtime_block(self, agent_name: str) -> str:
         info = smart_provider.describe()
-        active = info['last_used_provider'] or info['primary_provider']
-        active_m = info['last_used_model'] or info['primary_model']
+        active = info["last_used_provider"] or info["primary_provider"]
+        active_m = info["last_used_model"] or info["primary_model"]
         return (
-            f"\n[agent={agent_name} active={active}/{active_m} "
-            f"fallback={info['fallback_provider']}/{info['fallback_model']}]"
+            f"<runtime agent=\"{agent_name}\" active=\"{active}/{active_m}\" "
+            f"fallback=\"{info['fallback_provider']}/{info['fallback_model']}\"/>"
         )
 
-    def run_specialist(self, agent_name: str, prompt: str, conversation: Optional[List[Dict[str, str]]] = None) -> str:
-        """
-        Runs a specific specialist agent loop.
-        """
+    # ──────────────────────────────────────────────────────────
+    #  Specialist loop
+    # ──────────────────────────────────────────────────────────
+    def run_specialist(
+        self,
+        agent_name: str,
+        prompt: str,
+        conversation: Optional[List[Dict[str, str]]] = None,
+        stream_cb: Optional[Callable] = None,
+        parent_id: Optional[str] = None,
+    ) -> str:
         profile = AGENT_PROFILES.get(agent_name)
         if not profile:
-            return f"ERROR: Specialist '{agent_name}' not found."
+            return f"ERROR: Specialist '{agent_name}' not found. Known: {list(AGENT_PROFILES.keys())}"
 
-        # Initialize conversation with system prompt + runtime info
-        system_content = profile["system_prompt"] + self._runtime_block(agent_name, profile)
-        messages = [{"role": "system", "content": system_content}]
+        # Resolve toolset for this specialist (filter registry + add task/delegate).
+        wanted = list(profile.get("tools", []))
+        sub_registry = self.registry.filter(wanted)
+
+        has_delegate = "delegate" in wanted or "task" in wanted
+        if has_delegate:
+            sub_registry.register(self._make_task_tool(stream_cb, parent_id=agent_name))
+            # Back-compat alias
+            sub_registry.register(self._make_task_tool(stream_cb, parent_id=agent_name, alias="delegate"))
+
+        # Build system prompt: base + runtime + env + tool catalog + memory + tool-use format.
+        base = profile["system_prompt"] + "\n\n" + self._runtime_block(agent_name)
+        system_content = build_system_context(base, list(sub_registry))
+
+        messages: List[Dict[str, str]] = [{"role": "system", "content": system_content}]
         if conversation:
-            messages.extend(conversation)
+            # Drop any existing system messages from history to avoid drift.
+            messages.extend([m for m in conversation if m.get("role") != "system"])
         messages.append({"role": "user", "content": prompt})
 
-        # Filter tools for this specialist
-        specialist_tools = {}
-        for tool_name in profile.get("tools", []):
-            if tool_name == "delegate":
-                specialist_tools["delegate"] = self.delegate_tool
-            elif tool_name in self.tools_registry:
-                specialist_tools[tool_name] = self.tools_registry[tool_name]
+        session_id = str(uuid.uuid4())[:8]
+        self.active_sessions[session_id] = {"agent": agent_name, "parent": parent_id}
 
-        # Import run_agent from core.agent to avoid circular import if necessary,
-        # but we'll assume it's available.
-        from core.agent import run_agent
+        from core.agent import run_agent  # deferred import to avoid cycles
+        if stream_cb:
+            stream_cb({"type": "agent_start", "agent": agent_name, "session": session_id, "parent": parent_id})
+        try:
+            result = run_agent(messages, sub_registry, stream_cb=stream_cb)
+        finally:
+            if stream_cb:
+                stream_cb({"type": "agent_end", "agent": agent_name, "session": session_id})
+            self.active_sessions.pop(session_id, None)
+        return result
 
-        return run_agent(messages, specialist_tools)
+    # ──────────────────────────────────────────────────────────
+    #  Task / delegate tool (claude-code AgentTool port)
+    # ──────────────────────────────────────────────────────────
+    def _make_task_tool(
+        self,
+        parent_stream_cb: Optional[Callable],
+        parent_id: Optional[str] = None,
+        alias: str = "task",
+    ) -> Tool:
+        def handler(args: Dict[str, Any]) -> str:
+            target = args.get("agent") or args.get("subagent") or args.get("specialist")
+            prompt = args.get("prompt") or args.get("task") or args.get("description")
+            if not target or not prompt:
+                return "ERROR: task requires {agent, prompt}."
+            if target not in AGENT_PROFILES:
+                return f"ERROR: unknown specialist '{target}'. Known: {list(AGENT_PROFILES.keys())}"
 
-    def delegate_tool(self, args: Dict[str, Any]) -> str:
-        """
-        Tool used by agents to delegate tasks to other specialists.
-        Expected args: {"agent": "researcher", "prompt": "..."}
-        """
-        target_agent = args.get("agent")
-        prompt = args.get("prompt")
+            # Nested stream: tag sub events so UI can indent/group them.
+            def nested_cb(ev):
+                if parent_stream_cb and isinstance(ev, dict):
+                    ev = dict(ev)
+                    ev["nested_from"] = parent_id or "parent"
+                    parent_stream_cb(ev)
 
-        if not target_agent or not prompt:
-            return "ERROR: Missing 'agent' or 'prompt' arguments for delegation."
+            logger.info(f"[task] {parent_id or 'root'} → {target}: {prompt[:100]}…")
+            result = self.run_specialist(target, prompt, stream_cb=nested_cb, parent_id=parent_id)
+            # Return just the final text to the caller — isolating sub-context.
+            return f"[sub-agent {target} finished]\n{result}"
 
-        logger.info(f"Delegating task to {target_agent}: {prompt[:100]}...")
-        return self.run_specialist(target_agent, prompt)
+        return Tool(
+            name=alias,
+            description=(
+                "Spawn a sub-agent specialist with an isolated conversation. "
+                "Use for big explorations, parallel research, or whenever a task "
+                "benefits from a fresh context window. "
+                f"Valid agents: {', '.join(AGENT_PROFILES.keys())}."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "agent": {"type": "string", "description": "Specialist name"},
+                    "prompt": {"type": "string", "description": "Task description for the sub-agent"},
+                },
+                "required": ["agent", "prompt"],
+            },
+            handler=handler,
+            category="meta",
+        )
 
-    def handle_request(self, user_prompt: str, conversation: List[Dict[str, str]] = None) -> str:
-        """
-        Entry point for the orchestrator. Starts with the 'main' agent.
-        """
-        return self.run_specialist("main", user_prompt, conversation)
+    # ──────────────────────────────────────────────────────────
+    #  Entry
+    # ──────────────────────────────────────────────────────────
+    def handle_request(
+        self,
+        user_prompt: str,
+        conversation: Optional[List[Dict[str, str]]] = None,
+        stream_cb: Optional[Callable] = None,
+    ) -> str:
+        return self.run_specialist("main", user_prompt, conversation, stream_cb=stream_cb)

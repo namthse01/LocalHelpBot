@@ -76,6 +76,46 @@ def run_command(command: str, cwd: str = None) -> str:
         return f"ERROR: {e}"
 
 
+def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
+    """Exact string replace in a file. old_string must be unique unless replace_all=True."""
+    try:
+        p = Path(path)
+        if not p.exists():
+            return f"ERROR: File not found: {path}"
+        text = p.read_text(encoding="utf-8", errors="replace")
+        if old_string == new_string:
+            return "ERROR: old_string and new_string are identical — nothing to do."
+        if old_string not in text:
+            return f"ERROR: old_string not found in {path}. Read the file first and copy the EXACT text (including whitespace)."
+        count = text.count(old_string)
+        if count > 1 and not replace_all:
+            return f"ERROR: old_string appears {count} times in {path}. Provide more surrounding context to make it unique, or set replace_all=true."
+        new_text = text.replace(old_string, new_string) if replace_all else text.replace(old_string, new_string, 1)
+        p.write_text(new_text, encoding="utf-8")
+        delta = len(new_text) - len(text)
+        return f"OK: edited {path} ({count if replace_all else 1} replacement(s), delta {delta:+d} chars)"
+    except Exception as e:
+        return f"ERROR: {e}"
+
+
+def glob_files(pattern: str, path: str = ".") -> str:
+    """Find files matching a glob pattern (e.g. '**/*.py'). Returns up to 200 paths sorted by mtime desc."""
+    try:
+        base = Path(path)
+        if not base.exists():
+            return f"ERROR: Path not found: {path}"
+        matches = [p for p in base.glob(pattern) if p.is_file()]
+        if not matches:
+            return f"No files matching '{pattern}' under {path}"
+        matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        out = [str(p) for p in matches[:200]]
+        header = f"Found {len(matches)} file(s), showing {len(out)}:\n"
+        suffix = "" if len(matches) <= 200 else f"\n... ({len(matches) - 200} more)"
+        return header + "\n".join(out) + suffix
+    except Exception as e:
+        return f"ERROR: {e}"
+
+
 def grep_file(path: str, pattern: str) -> str:
     """Search for regex pattern in a file. Returns matching lines with line numbers."""
     try:
@@ -238,12 +278,31 @@ def _gated_run_command(a):
     return run_command(cmd, cwd)
 
 
+def _gated_edit_file(a):
+    from core.permissions import request_permission
+    path = a["path"]
+    old_s = a.get("old_string", "")
+    new_s = a.get("new_string", "")
+    replace_all = bool(a.get("replace_all", False))
+    decision = request_permission("edit_file", path, {
+        "path": path,
+        "old_preview": old_s[:200],
+        "new_preview": new_s[:200],
+        "replace_all": replace_all,
+    })
+    if not decision["allowed"]:
+        return f"PERMISSION_DENIED: user declined edit_file for {path} ({decision['reason']})."
+    return edit_file(path, old_s, new_s, replace_all)
+
+
 FILE_TOOLS = {
     "read_file":    lambda a: read_file(a["path"]),
     "write_file":   _gated_write_file,
+    "edit_file":    _gated_edit_file,
     "list_dir":     lambda a: list_dir(a.get("path", ".")),
     "run_command":  _gated_run_command,
     "grep_file":    lambda a: grep_file(a["path"], a["pattern"]),
+    "glob_files":   lambda a: glob_files(a["pattern"], a.get("path", ".")),
 }
 
 WEB_TOOLS = {

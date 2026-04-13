@@ -16,6 +16,19 @@
         .custom-scrollbar::-webkit-scrollbar { width: 6px; }
         .custom-scrollbar::-webkit-scrollbar-track { background: #1e293b; }
         .custom-scrollbar::-webkit-scrollbar-thumb { background: #475569; border-radius: 10px; }
+        .activity-panel { background:#0b1224; border:1px solid #1e293b; border-radius:12px; padding:10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; }
+        .activity-row { display:flex; gap:8px; padding:4px 0; border-bottom:1px dashed #1e293b; align-items:flex-start; }
+        .activity-row:last-child { border-bottom:0; }
+        .activity-icon { width:18px; flex-shrink:0; text-align:center; }
+        .activity-body { flex:1; white-space:pre-wrap; word-break:break-word; color:#cbd5e1; }
+        .activity-body .tool-name { color:#a5b4fc; font-weight:600; }
+        .activity-body .ok { color:#34d399; }
+        .activity-body .err { color:#f87171; }
+        .activity-body .muted { color:#64748b; }
+        .activity-thought { color:#e2e8f0; font-style:italic; }
+        .activity-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; color:#94a3b8; font-size:11px; text-transform:uppercase; letter-spacing:.05em; }
+        .spinner { display:inline-block; width:10px; height:10px; border:2px solid #475569; border-top-color:#818cf8; border-radius:50%; animation:spin .8s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
     </style>
 </head>
 <body class="flex flex-col h-screen overflow-hidden">
@@ -360,6 +373,92 @@
             chatWindow.scrollTop = chatWindow.scrollHeight;
         }
 
+        function escapeHtml(s) {
+            return String(s || '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[c]);
+        }
+
+        function createActivityPanel() {
+            const chatWindow = $id('chat-window');
+            const wrap = document.createElement('div');
+            wrap.className = 'flex justify-start mb-4';
+            const panel = document.createElement('div');
+            panel.className = 'activity-panel max-w-[90%] w-full';
+            panel.innerHTML = `
+                <div class="activity-header">
+                    <span><i class="fas fa-cogs mr-1"></i>Agent activity</span>
+                    <span class="activity-meta"><span class="spinner"></span> <span class="activity-status">working…</span></span>
+                </div>
+                <div class="activity-rows"></div>`;
+            wrap.appendChild(panel);
+            if (chatWindow) chatWindow.appendChild(wrap);
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+            return {
+                rowsEl: panel.querySelector('.activity-rows'),
+                statusEl: panel.querySelector('.activity-status'),
+                metaEl: panel.querySelector('.activity-meta'),
+                wrap,
+            };
+        }
+
+        function addActivityRow(panel, iconHtml, bodyHtml) {
+            const row = document.createElement('div');
+            row.className = 'activity-row';
+            row.innerHTML = `<div class="activity-icon">${iconHtml}</div><div class="activity-body">${bodyHtml}</div>`;
+            panel.rowsEl.appendChild(row);
+            const chatWindow = $id('chat-window');
+            if (chatWindow) chatWindow.scrollTop = chatWindow.scrollHeight;
+            return row;
+        }
+
+        function renderAgentEvent(panel, ev, ctx) {
+            if (!ev || !ev.type) return;
+            if (ev.type === 'status') {
+                panel.statusEl.textContent = ev.text || 'working…';
+                return;
+            }
+            if (ev.type === 'agent_start') {
+                addActivityRow(panel, '<i class="fas fa-play text-indigo-400"></i>',
+                    `<span class="muted">agent</span> <span class="tool-name">${escapeHtml(ev.agent)}</span> started`);
+                return;
+            }
+            if (ev.type === 'thought') {
+                addActivityRow(panel, '<i class="fas fa-lightbulb text-amber-400"></i>',
+                    `<span class="activity-thought">${escapeHtml(ev.text)}</span>`);
+                return;
+            }
+            if (ev.type === 'tool_call') {
+                let args = '';
+                try { args = JSON.stringify(ev.args || {}); } catch(e) { args = String(ev.args); }
+                if (args.length > 240) args = args.slice(0, 240) + '…';
+                const row = addActivityRow(panel, '<i class="fas fa-bolt text-sky-400"></i>',
+                    `<span class="tool-name">${escapeHtml(ev.tool)}</span> <span class="muted">${escapeHtml(args)}</span><div class="tool-result muted" style="margin-top:4px"><span class="spinner"></span> running…</div>`);
+                ctx.pendingTools[ev.id] = row;
+                return;
+            }
+            if (ev.type === 'tool_result') {
+                const row = ctx.pendingTools[ev.id];
+                const preview = (ev.preview || '').slice(0, 400);
+                const cls = ev.ok ? 'ok' : 'err';
+                const icon = ev.ok ? '✓' : '✗';
+                if (row) {
+                    const res = row.querySelector('.tool-result');
+                    if (res) res.innerHTML = `<span class="${cls}">${icon}</span> <span class="muted">${escapeHtml(preview)}</span>`;
+                } else {
+                    addActivityRow(panel, `<span class="${cls}">${icon}</span>`,
+                        `<span class="tool-name">${escapeHtml(ev.tool||'tool')}</span> <span class="muted">${escapeHtml(preview)}</span>`);
+                }
+                return;
+            }
+            if (ev.type === 'done') {
+                panel.metaEl.innerHTML = `<i class="fas fa-check text-emerald-400"></i> done ${ev.total_ms||0}ms · ${escapeHtml(ev.active||'')}`;
+                return;
+            }
+            if (ev.type === 'final') {
+                // final handled by caller via `message.content` of done frame
+                return;
+            }
+        }
+
         async function sendMessage() {
             const input = $id('user-input');
             if (!input) return;
@@ -370,27 +469,55 @@
             input.value = '';
             input.style.height = 'auto';
 
-            const chatWindow = $id('chat-window');
-            const loadingDiv = document.createElement('div');
-            loadingDiv.className = 'flex justify-start mb-4';
-            loadingDiv.innerHTML = `<div class="message-bot px-4 py-2 text-sm text-slate-400 italic">Bot is thinking...</div>`;
-            if (chatWindow) chatWindow.appendChild(loadingDiv);
+            const panel = createActivityPanel();
+            const ctx = { pendingTools: {} };
+            let finalText = '';
 
             try {
                 const response = await fetch('/api/chat', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/x-ndjson' },
                     body: JSON.stringify({
                         model: currentModel,
-                        messages: [{ role: 'user', content: text }]
+                        messages: [{ role: 'user', content: text }],
+                        stream: true
                     })
                 });
                 if (!response.ok) throw new Error(`Server Error: ${response.status}`);
-                const data = await response.json();
-                if (chatWindow && chatWindow.contains(loadingDiv)) chatWindow.removeChild(loadingDiv);
-                appendMessage('bot', data.message.content);
+
+                const ct = (response.headers.get('Content-Type') || '').toLowerCase();
+                if (!response.body || !ct.includes('ndjson')) {
+                    // Non-streaming path (legacy models): just show the JSON response
+                    const data = await response.json();
+                    panel.metaEl.innerHTML = `<i class="fas fa-check text-emerald-400"></i> done`;
+                    appendMessage('bot', (data.message && data.message.content) || JSON.stringify(data));
+                    return;
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder('utf-8');
+                let buf = '';
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    buf += decoder.decode(value, { stream: true });
+                    let idx;
+                    while ((idx = buf.indexOf('\n')) >= 0) {
+                        const line = buf.slice(0, idx).trim();
+                        buf = buf.slice(idx + 1);
+                        if (!line) continue;
+                        let frame;
+                        try { frame = JSON.parse(line); } catch(e) { continue; }
+                        if (frame.agent_event) renderAgentEvent(panel, frame.agent_event, ctx);
+                        if (frame.done && frame.message && frame.message.content) {
+                            finalText = frame.message.content;
+                        }
+                    }
+                }
+                if (finalText) appendMessage('bot', finalText);
+                else panel.metaEl.innerHTML = `<i class="fas fa-check text-emerald-400"></i> done`;
             } catch (error) {
-                if (chatWindow && chatWindow.contains(loadingDiv)) chatWindow.removeChild(loadingDiv);
+                panel.metaEl.innerHTML = `<i class="fas fa-times text-red-400"></i> error`;
                 appendMessage('bot', `❌ Error: ${error.message}`);
             }
         }

@@ -1,5 +1,7 @@
 # LocalHelpBot
 
+> **v2 upgrade (2026-04):** ported core patterns from claude-code — structured `<tool_use>` blocks with **parallel tool calls per turn**, proper `Tool` schema registry ([core/tool_schema.py](core/tool_schema.py)), environment + tool-catalog injection into every system prompt ([core/context.py](core/context.py)), and a real **Task sub-agent** tool replacing the ad-hoc `delegate`. Legacy `ACTION: {...}` format still parsed for back-compat. One-file packaging via [build_exe.py](build_exe.py) → `dist/LocalHelpBot.exe`; a single [start_localhelpbot.bat](start_localhelpbot.bat) runs the exe if built, else the dev venv. Ollama remains an external dependency (cannot be bundled).
+
 Hệ thống AI Multi-Agent chạy local, kết hợp RAG (Retrieval-Augmented Generation), Agentic Loop tự sửa lỗi, và Multi-Model Orchestration. Hỗ trợ fallback tự động từ Cloud API (**Anthropic / OpenAI / Google Gemini & Gemma**) sang Ollama local khi hết token hoặc mất mạng. Đổi provider / model / API key trực tiếp trong Web UI (tab **Change Mode**) — API key được mã hoá tại chỗ (DPAPI trên Windows, Fernet trên Linux/Mac). Agent có bộ công cụ đầy đủ (đọc file, ghi file, chạy lệnh, tìm kiếm web, fetch URL), các thao tác ghi/chạy lệnh sẽ **hỏi xin phép bạn qua modal** trước khi thực hiện. Tích hợp Discord Bot và Web UI.
 
 ---

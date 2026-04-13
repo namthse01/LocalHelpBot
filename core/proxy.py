@@ -446,34 +446,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
         model = payload.get("model", "")
 
         if model == AUTO_MODEL and is_chat:
-            import time as _t
             messages = payload.get("messages", [])
             user_q = _last_user_msg(messages)
             print(f"[orchestrator] handling request: {user_q!r}", flush=True)
-            _t0 = _t.perf_counter()
-            final_answer = orchestrator.handle_request(user_q, conversation=messages)
-            total_ms = int((_t.perf_counter() - _t0) * 1000)
-            try:
-                from core.providers import smart_provider as _sp
-                last_timing = getattr(_sp, "_last_timing", "")
-                active = f"{_sp._last_provider or '?'}/{_sp._last_model or '?'}"
-            except Exception:
-                last_timing, active = "", "?"
-            print(f"[orchestrator] DONE total={total_ms}ms last={active} {last_timing}", flush=True)
-            _record_stat(user_q, total_ms, active, last_timing)
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("X-Response-Time-Ms", str(total_ms))
-            self.send_header("X-Model-Used", active)
-            self.send_header("X-LLM-Timing", last_timing)
-            self.end_headers()
-            self.wfile.write(json.dumps({
-                "model": REAL_MODEL,
-                "message": {"role": "assistant", "content": final_answer},
-                "done": True,
-                "timing": {"total_ms": total_ms, "active": active, "last_llm": last_timing}
-            }).encode())
+            self._run_agent_response(messages, {}, orchestrator_mode=True, user_q=user_q)
             return
 
         if model == CAD_MODEL and is_chat:
@@ -534,36 +510,86 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(resp_body)
 
-    def _run_agent_response(self, messages: list, tools: dict):
+    def _stream_headers(self):
         self.send_response(200)
         self.send_header("Content-Type", "application/x-ndjson")
+        self.send_header("Cache-Control", "no-cache")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
-        wfile = self.wfile
-        def emit(text: str):
-            chunk = json.dumps({
-                "model":      REAL_MODEL,
-                "message":    {"role": "assistant", "content": text},
-                "done":       False,
-            }) + "\n"
+
+    def _event_emitter(self, wfile):
+        def _human(event: dict) -> str:
+            t = event.get("type")
+            if t == "thought":
+                return event.get("text", "") + "\n\n"
+            if t == "tool_call":
+                try:
+                    args_str = json.dumps(event.get("args", {}), ensure_ascii=False)
+                except Exception:
+                    args_str = str(event.get("args", {}))
+                if len(args_str) > 200:
+                    args_str = args_str[:200] + "…"
+                return f"[{event.get('tool','?')}] {args_str}\n"
+            if t == "tool_result":
+                ok = "✓" if event.get("ok") else "✗"
+                preview = (event.get("preview") or "")[:300]
+                return f"  {ok} {preview}\n\n"
+            if t == "status":
+                return f"· {event.get('text','')}\n"
+            if t == "agent_start":
+                return f"▶ [{event.get('agent','agent')}] start\n"
+            if t == "agent_end":
+                return ""
+            if t == "final":
+                return ""  # sent as done chunk separately
+            return event.get("text", "")
+
+        def emit(event):
+            if isinstance(event, str):
+                event = {"type": "text", "text": event}
+            frame = {
+                "model":       REAL_MODEL,
+                "message":     {"role": "assistant", "content": _human(event)},
+                "agent_event": event,
+                "done":        False,
+            }
             try:
-                wfile.write(chunk.encode())
+                wfile.write((json.dumps(frame, ensure_ascii=False) + "\n").encode("utf-8"))
                 wfile.flush()
             except Exception:
                 pass
+        return emit
+
+    def _run_agent_response(self, messages: list, tools: dict, orchestrator_mode: bool = False, user_q: str = ""):
+        import time as _t
+        self._stream_headers()
+        wfile = self.wfile
+        emit = self._event_emitter(wfile)
+        t0 = _t.perf_counter()
         try:
-            run_agent = _get_agent()
-            final = run_agent(messages, tools, stream_cb=emit)
+            if orchestrator_mode:
+                final = orchestrator.handle_request(user_q, conversation=messages, stream_cb=emit)
+            else:
+                run_agent = _get_agent()
+                final = run_agent(messages, tools, stream_cb=emit)
         except Exception as e:
             final = f"ERROR in agent loop: {e}"
+        total_ms = int((_t.perf_counter() - t0) * 1000)
+        try:
+            from core.providers import smart_provider as _sp
+            active = f"{_sp._last_provider or '?'}/{_sp._last_model or '?'}"
+            last_timing = getattr(_sp, "_last_timing", "")
+        except Exception:
+            active, last_timing = "?", ""
+        if orchestrator_mode:
+            _record_stat(user_q, total_ms, active, last_timing)
         done_chunk = json.dumps({
-            "model":              REAL_MODEL,
-            "message":            {"role": "assistant", "content": final},
-            "done":               True,
-            "done_reason":        "stop",
-            "total_duration":     0,
-            "prompt_eval_count":  0,
-            "eval_count":         0,
+            "model":          REAL_MODEL,
+            "message":        {"role": "assistant", "content": final},
+            "agent_event":    {"type": "done", "total_ms": total_ms, "active": active},
+            "done":           True,
+            "done_reason":    "stop",
+            "total_duration": 0,
         }) + "\n"
         try:
             wfile.write(done_chunk.encode())

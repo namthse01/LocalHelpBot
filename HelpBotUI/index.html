@@ -205,10 +205,17 @@
                             </div>
                             <div>
                                 <label class="block text-xs text-slate-400 mb-1">Model Name</label>
-                                <input type="text" id="mode-primary-model" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-indigo-500" placeholder="e.g. claude-3-5-sonnet...">
+                                <input type="text" id="mode-primary-model" list="primary-model-list" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-indigo-500" placeholder="e.g. claude-3-5-sonnet...">
+                                <datalist id="primary-model-list"></datalist>
+                                <div id="mode-primary-local-picker" class="mt-2 hidden">
+                                    <label class="block text-xs text-slate-400 mb-1">Installed Ollama models</label>
+                                    <select id="mode-primary-local-select" onchange="document.getElementById('mode-primary-model').value=this.value" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-indigo-500">
+                                        <option value="">— pick an installed model —</option>
+                                    </select>
+                                </div>
                             </div>
                         </div>
-                        <div>
+                        <div id="mode-primary-key-wrap">
                             <label class="block text-xs text-slate-400 mb-1">API Key</label>
                             <input type="password" id="mode-primary-key" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-indigo-500" placeholder="sk-...">
                         </div>
@@ -218,7 +225,8 @@
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div>
                                 <label class="block text-xs text-slate-400 mb-1">Fallback Model</label>
-                                <input type="text" id="mode-fallback-model" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-indigo-500" placeholder="e.g. qwen3.5:latest">
+                                <input type="text" id="mode-fallback-model" list="fallback-model-list" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-indigo-500" placeholder="e.g. qwen3.5:latest">
+                                <datalist id="fallback-model-list"></datalist>
                             </div>
                         </div>
                     </div>
@@ -538,27 +546,113 @@
             });
         }
 
-        function renderModeSettings() {
+        const _API_MODEL_SUGGESTIONS = {
+            anthropic: ['claude-3-5-sonnet-20240620', 'claude-sonnet-4-5', 'claude-opus-4-20250514', 'claude-3-5-haiku-20241022'],
+            openai: ['gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo', 'o1-mini'],
+            google: ['gemma-3-27b-it', 'gemma-3-12b-it', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-pro'],
+        };
+        let _localModels = [];
+
+        async function fetchLocalModels() {
+            try {
+                const r = await fetch('/api/tags');
+                if (!r.ok) return [];
+                const data = await r.json();
+                // Filter out our virtual agents (they have empty size)
+                return (data.models || [])
+                    .filter(m => (m.size || 0) > 0)
+                    .map(m => m.name || m.model)
+                    .filter(Boolean);
+            } catch (e) { return []; }
+        }
+
+        function updateModelDatalist(provider) {
+            const dl = $id('primary-model-list');
+            if (!dl) return;
+            dl.innerHTML = '';
+            const list = provider === 'local' ? _localModels : (_API_MODEL_SUGGESTIONS[provider] || []);
+            list.forEach(n => {
+                const opt = document.createElement('option');
+                opt.value = n;
+                dl.appendChild(opt);
+            });
+            // Fallback datalist — always local models
+            const flist = $id('fallback-model-list');
+            if (flist) {
+                flist.innerHTML = '';
+                _localModels.forEach(n => {
+                    const o = document.createElement('option');
+                    o.value = n;
+                    flist.appendChild(o);
+                });
+            }
+        }
+
+        function toggleLocalUI(provider) {
+            const keyWrap = $id('mode-primary-key-wrap');
+            const localPicker = $id('mode-primary-local-picker');
+            const modelInput = $id('mode-primary-model');
+            if (provider === 'local') {
+                if (keyWrap) keyWrap.classList.add('hidden');
+                if (localPicker) localPicker.classList.remove('hidden');
+                if (modelInput) modelInput.placeholder = 'e.g. qwen3.5:latest';
+                const sel = $id('mode-primary-local-select');
+                if (sel) {
+                    sel.innerHTML = '<option value="">— pick an installed model —</option>';
+                    _localModels.forEach(n => {
+                        const o = document.createElement('option');
+                        o.value = n; o.textContent = n;
+                        sel.appendChild(o);
+                    });
+                }
+            } else {
+                if (keyWrap) keyWrap.classList.remove('hidden');
+                if (localPicker) localPicker.classList.add('hidden');
+                if (modelInput) modelInput.placeholder = provider === 'google' ? 'e.g. gemma-3-27b-it' : 'e.g. claude-3-5-sonnet...';
+            }
+            updateModelDatalist(provider);
+        }
+
+        async function renderModeSettings() {
+            if (_localModels.length === 0) _localModels = await fetchLocalModels();
             const p = configState.providers?.primary || {};
             const f = configState.providers?.fallback || {};
             const providerSelect = $id('mode-primary-provider');
-            if (providerSelect) providerSelect.value = p.provider || 'anthropic';
+            const currentProvider = (p.type === 'local') ? 'local' : (p.provider || 'anthropic');
+            if (providerSelect) {
+                providerSelect.value = currentProvider;
+                providerSelect.onchange = () => toggleLocalUI(providerSelect.value);
+            }
             const modelInput = $id('mode-primary-model');
             if (modelInput) modelInput.value = p.model || '';
             const keyInput = $id('mode-primary-key');
             if (keyInput) keyInput.value = p.api_key || '';
             const fallbackInput = $id('mode-fallback-model');
             if (fallbackInput) fallbackInput.value = f.model || '';
+            toggleLocalUI(currentProvider);
         }
 
         async function saveModeSettings() {
             const provider = $id('mode-primary-provider')?.value || 'anthropic';
-            const model = $id('mode-primary-model')?.value || '';
+            const model = ($id('mode-primary-model')?.value || '').trim();
             const key = $id('mode-primary-key')?.value || '';
-            const fallbackModel = $id('mode-fallback-model')?.value || '';
-            const primary = { type: provider === 'local' ? 'local' : 'api', provider: provider !== 'local' ? provider : undefined, model: model, api_key: provider !== 'local' ? key : undefined };
+            const fallbackModel = ($id('mode-fallback-model')?.value || '').trim() || 'qwen3.5:latest';
+
+            if (!model) { alert('Please enter a model name.'); return; }
+
+            let primary;
+            if (provider === 'local') {
+                primary = { type: 'local', provider: 'ollama', model };
+            } else {
+                if (!key || /^[•*]+$/.test(key)) {
+                    // Key is blank or still masked — allow (backend preserves existing)
+                }
+                primary = { type: 'api', provider, model, api_key: key };
+            }
             const fallback = { type: 'local', provider: 'ollama', model: fallbackModel };
-            if (await updateConfig({ providers: { primary, fallback } })) alert('AI Mode updated successfully!');
+            if (await updateConfig({ providers: { primary, fallback } })) {
+                alert(`AI Mode updated!\nPrimary: ${provider} / ${model}\nFallback: ${fallbackModel}`);
+            }
         }
 
         function init() {

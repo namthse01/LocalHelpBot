@@ -1,6 +1,6 @@
 # LocalHelpBot
 
-Hệ thống AI Multi-Agent chạy local, kết hợp RAG (Retrieval-Augmented Generation), Agentic Loop tự sửa lỗi, và Multi-Model Orchestration. Hỗ trợ fallback tự động từ Cloud API (Anthropic/OpenAI) sang Ollama local khi hết token hoặc mất mạng. Tích hợp Discord Bot và Web UI.
+Hệ thống AI Multi-Agent chạy local, kết hợp RAG (Retrieval-Augmented Generation), Agentic Loop tự sửa lỗi, và Multi-Model Orchestration. Hỗ trợ fallback tự động từ Cloud API (**Anthropic / OpenAI / Google Gemini & Gemma**) sang Ollama local khi hết token hoặc mất mạng. Đổi provider / model / API key trực tiếp trong Web UI (tab **Change Mode**) — API key được mã hoá tại chỗ (DPAPI trên Windows, Fernet trên Linux/Mac). Agent có bộ công cụ đầy đủ (đọc file, ghi file, chạy lệnh, tìm kiếm web, fetch URL), các thao tác ghi/chạy lệnh sẽ **hỏi xin phép bạn qua modal** trước khi thực hiện. Tích hợp Discord Bot và Web UI.
 
 ---
 
@@ -116,7 +116,11 @@ source venv/bin/activate
 pip install chromadb pycryptodome pywin32 langchain-core langchain-text-splitters langchain-community tiktoken pypdf docx2txt unstructured requests discord.py
 ```
 
-> **Lưu ý cho Linux/Mac:** bỏ `pywin32` khỏi lệnh pip vì đó là thư viện chỉ dành cho Windows.
+> **Lưu ý cho Linux/Mac:** bỏ `pywin32` và **thay bằng `cryptography`** (dùng để mã hoá API key khi không có DPAPI của Windows):
+>
+> ```bash
+> pip install chromadb pycryptodome cryptography langchain-core langchain-text-splitters langchain-community tiktoken pypdf docx2txt unstructured requests discord.py
+> ```
 
 ### Bước 4: Cấu hình `config.py`
 
@@ -130,14 +134,18 @@ LARGE_MODEL = "glm-4.7-flash:latest" # Model lớn cho deep-agent (để "" nế
 EMBED_MODEL = "mxbai-embed-large:latest"  # Model embedding cho RAG
 ```
 
-**4b. API Key (tuỳ chọn)** — nếu muốn dùng Cloud API làm primary, local làm fallback:
+**4b. API Key (tuỳ chọn — có thể đặt trong `config.py` HOẶC nhập sau trong Web UI):**
+
+> **Cách khuyên dùng:** bỏ qua bước này và nhập trực tiếp ở Web UI → tab **Change Mode** sau khi khởi động. API key sẽ được **mã hoá** và lưu vào `runtime_overrides.json` (đã nằm trong `.gitignore`). Không bao giờ commit API key vào git.
+
+Nếu vẫn muốn set mặc định trong `config.py`:
 
 ```python
 MODEL_PROVIDERS = {
     "primary": {
         "type": "api",
-        "provider": "anthropic",  # hoặc "openai"
-        "api_key": "sk-ant-xxxxx",  # điền API key thật
+        "provider": "anthropic",  # "anthropic" | "openai" | "google"
+        "api_key": "sk-ant-xxxxx",  # điền API key thật (hoặc để ENV var ANTHROPIC_API_KEY)
         "model": "claude-3-5-sonnet-20240620",
     },
     "fallback": {
@@ -148,6 +156,14 @@ MODEL_PROVIDERS = {
 }
 ```
 
+**Các model API được hỗ trợ sẵn:**
+
+| Provider | Ví dụ model | Định dạng API key |
+|---|---|---|
+| `anthropic` | `claude-3-5-sonnet-20240620`, `claude-sonnet-4-5`, `claude-opus-4-20250514` | `sk-ant-...` |
+| `openai` | `gpt-4o-mini`, `gpt-4o`, `o1-mini` | `sk-...` |
+| `google` | `gemma-3-27b-it`, `gemma-3-12b-it`, `gemini-2.5-flash`, `gemini-2.5-pro` (free tier) | `AIza...` |
+
 Nếu **chỉ muốn dùng local** (không cần API key), đổi primary thành:
 
 ```python
@@ -157,6 +173,8 @@ Nếu **chỉ muốn dùng local** (không cần API key), đổi primary thành
     "model": "qwen3.5:latest",
 },
 ```
+
+> Hoặc trong Web UI → **Change Mode** → chọn **"Local Only (Ollama)"**, dropdown sẽ liệt kê các model đã pull, chọn xong nhấn **Apply Mode Changes**.
 
 **4c. Discord Bot (tuỳ chọn)** — nếu muốn kết nối Discord:
 
@@ -224,7 +242,7 @@ Giao diện Web có 5 tab:
 | **Agents** | Xem và chỉnh sửa system prompt, model của từng agent |
 | **Connect** | Cấu hình và kết nối Discord Bot (nhấn Connect để bật, Disconnect để tắt) |
 | **Daily Tasks** | Quản lý các tác vụ tự động (automation scheduler) |
-| **Change Mode** | Chuyển đổi giữa Cloud API và Local Ollama |
+| **Change Mode** | Đổi provider / model / API key (Anthropic, OpenAI, Google Gemini/Gemma, Local Ollama). Khi chọn "Local Only" sẽ hiện dropdown các model Ollama đã pull. API key được mã hoá khi lưu. |
 
 ### Các virtual model (chọn trong dropdown Chat)
 
@@ -284,16 +302,77 @@ Bot sẽ tự động chạy prompt và gửi kết quả vào Discord channel �
 
 ---
 
+## Bộ công cụ của Agent & Hệ thống xin phép
+
+Agent chính có các tool sau và sẽ tự gọi khi cần:
+
+| Tool | Loại | Có xin phép? |
+|---|---|---|
+| `read_file`, `list_dir`, `grep_file` | Đọc file cục bộ | ❌ (read-only) |
+| `search_web`, `fetch_url` | Tìm kiếm / đọc trang web | ❌ (read-only) |
+| `write_file` | Ghi file vào ổ đĩa | ✅ **hỏi qua modal** |
+| `run_command` | Chạy shell command | ✅ **hỏi qua modal** |
+| `delegate` | Giao việc cho specialist khác | ❌ |
+
+**Modal xin phép** hiện ra trong Web UI mỗi khi agent muốn ghi file hoặc chạy lệnh, với 4 lựa chọn:
+
+- **Deny** — từ chối lần này
+- **Allow once** — cho phép đúng lần này
+- **Allow for session** — cho phép tool này trên đúng path/command đó cả session
+- **Always (this tool)** — cho phép blanket tool này trong cả session
+
+Nếu bạn không phản hồi trong 120 giây, mặc định là **từ chối**.
+
+---
+
+## Mã hoá API key & Runtime Overrides
+
+Khi bạn click **Apply Mode Changes** trong Web UI, thay đổi được ghi vào file `runtime_overrides.json` ở gốc project (đã nằm trong `.gitignore`):
+
+- **API key được mã hoá** trước khi ghi xuống đĩa:
+  - **Windows:** dùng DPAPI qua `win32crypt` — gắn với user account, không passphrase.
+  - **Linux/Mac:** dùng Fernet (AES-128) với key lưu ở `.secret_key` (cũng đã gitignore).
+- Trong bộ nhớ, API key được giải mã lại để gọi API bình thường.
+- UI chỉ nhận/gửi giá trị **đã che** (`••••••••`) khi bạn đã nhập key trước đó. Nếu không sửa, giá trị cũ được giữ nguyên.
+
+Cơ chế ưu tiên khi load config:
+
+1. `config.py` đọc trước (giá trị mặc định).
+2. Nếu có `runtime_overrides.json` → đè lên `MODEL_PROVIDERS`, `AGENT_PROFILES`, `DISCORD_SETTINGS`, `AUTOMATION_TASKS`.
+3. `Apply Mode Changes` cập nhật in-memory **và** ghi đĩa, đồng thời reload `smart_provider` mà không cần restart.
+
+> Nếu muốn reset về mặc định: xoá `runtime_overrides.json` và restart.
+
+---
+
+## Endpoints nội bộ (cho debug)
+
+| Endpoint | Method | Mục đích |
+|---|---|---|
+| `/api/config` | GET/POST | Đọc / cập nhật cấu hình (API key luôn bị mask ở GET) |
+| `/api/stats` | GET | 20 request gần nhất + thời gian xử lý, model đã dùng |
+| `/api/tags` | GET | Danh sách model Ollama + các virtual agent |
+| `/api/permissions/pending` | GET | Các yêu cầu xin phép đang chờ |
+| `/api/permissions/resolve` | POST | `{id, approved, scope}` — trả lời modal |
+| `/api/heartbeat` | POST | UI ping (mặc định 5s). Nếu không ping trong 45s → proxy tự tắt |
+| `/api/shutdown` | POST | Tắt toàn bộ hệ thống |
+
+Header `X-Response-Time-Ms` và `X-Model-Used` được đính kèm mọi response chat — xem trong DevTools để đo độ trễ.
+
+---
+
 ## Cấu trúc thư mục
 
 ```
 LocalHelpBot/
 ├── config.py                  # File cấu hình duy nhất — sửa file này khi clone về
 ├── core/                      # Logic chính
-│   ├── proxy.py               # HTTP Proxy server (port 11435) — điểm vào chính
+│   ├── proxy.py               # HTTP Proxy server (port 11435) — multi-thread, điểm vào chính
 │   ├── orchestrator.py        # Multi-Agent orchestrator — điều phối agents
-│   ├── agent.py               # Agentic loop — tự chạy tool, tự sửa lỗi
-│   ├── providers.py           # Smart Model Provider — API fallback sang Local
+│   ├── agent.py               # Agentic loop — tự chạy tool, tự sửa lỗi, có timing
+│   ├── providers.py           # Smart Model Provider — Anthropic/OpenAI/Google + Ollama fallback
+│   ├── secrets.py             # Mã hoá API key (DPAPI trên Windows, Fernet trên Linux/Mac)
+│   ├── permissions.py         # Hàng đợi xin phép cho write_file / run_command
 │   ├── query.py               # RAG query engine — truy vấn ChromaDB
 │   ├── tools.py               # Tools: read_file, write_file, run_command, search_web, fetch_url, grep_file
 │   ├── browser.py             # Tools đọc cookies/sessions/storage từ browser local
@@ -309,14 +388,12 @@ LocalHelpBot/
 │   ├── update_rag.py          # Cập nhật RAG khi thêm docs mới
 │   └── process_data.py        # Script phụ xử lý data
 ├── docs/                      # Thư mục chứa tài liệu cho RAG knowledge base
-├── HelpBotUI/                 # Web UI (HTML/CSS/JS)
-│   ├── css/styles.css
-│   └── js/main.js
-├── static/                    # Web UI standalone (legacy)
-│   ├── index.html
-│   └── script.js
+├── HelpBotUI/                 # Web UI
+│   └── index.html             # Giao diện chính (script + CSS inline)
+├── config.py                  # Cấu hình mặc định (checked in)
+├── runtime_overrides.json     # (tự tạo) Ghi đè runtime từ Web UI — KHÔNG commit, chứa API key mã hoá
+├── .secret_key                # (tự tạo, Linux/Mac) Fernet key cho mã hoá — KHÔNG commit
 ├── start_localhelpbot.bat     # Script khởi chạy toàn bộ hệ thống (Windows)
-├── start_rag_proxy.bat        # Script chạy proxy riêng (Windows)
 └── .gitignore
 ```
 
@@ -331,8 +408,13 @@ LocalHelpBot/
 | `RAG database path not found: cad_db` | Chưa build RAG | Chạy `python data/indexer.py` |
 | `No module named 'chromadb'` | Chưa cài dependencies | Activate venv rồi chạy lại `pip install ...` |
 | `Invalid Discord Token` | Token sai trong config.py | Kiểm tra lại `DISCORD_TOKEN` |
-| `FileNotFoundError: HelpBotUI/index.html` | Thiếu file UI | Đảm bảo có file `HelpBotUI/index.html` hoặc dùng `static/index.html` |
+| `FileNotFoundError: HelpBotUI/index.html` | Thiếu file UI | Đảm bảo có file `HelpBotUI/index.html` |
 | Port 11435 đã bị chiếm | Có process khác dùng port | Đổi `PROXY_PORT` trong `config.py` hoặc kill process cũ |
+| `HTTP 401 Unauthorized` từ API | API key sai, hoặc key không khớp provider (vd key Google nhập vào provider Anthropic) | Check lại provider/key format: `sk-ant-...` (Anthropic), `sk-...` (OpenAI), `AIza...` (Google) |
+| `HTTP 400 Bad Request` từ Google | Model không tồn tại (vd `gemma-4`) hoặc bị safety-block | Xem log `[google] HTTP 400 — body: ...` ở console. Dùng model hợp lệ như `gemma-3-27b-it` |
+| `PERMISSION_DENIED: user declined ...` | Bạn đã từ chối modal xin phép hoặc bỏ 120s không phản hồi | Thử lại và bấm "Allow" |
+| UI báo "Failed to fetch" giữa chừng | Request quá dài, UI đã tắt. Không còn xảy ra sau khi chuyển sang ThreadingHTTPServer + heartbeat 45s | Restart proxy. Nếu tái diễn, tăng `HEARTBEAT_TIMEOUT` trong `core/proxy.py` |
+| `Could not decrypt api_key` khi start | Đã đổi máy/user Windows (DPAPI bị khoá theo account) hoặc mất `.secret_key` | Xoá `runtime_overrides.json` và nhập lại key qua Web UI |
 
 ---
 
@@ -345,16 +427,19 @@ git clone <repo-url> && cd LocalHelpBot
 # 2. Pull models
 ollama pull qwen3.5 && ollama pull mxbai-embed-large && ollama pull glm-4.7-flash
 
-# 3. Setup Python
+# 3. Setup Python (Windows)
 python -m venv venv && venv\Scripts\activate
 pip install chromadb pycryptodome pywin32 langchain-core langchain-text-splitters langchain-community tiktoken pypdf docx2txt unstructured requests discord.py
+#    Linux/Mac — thay `pywin32` bằng `cryptography`:
+# pip install chromadb pycryptodome cryptography langchain-core langchain-text-splitters langchain-community tiktoken pypdf docx2txt unstructured requests discord.py
 
-# 4. Sửa config.py (model name, API key nếu cần, Discord token nếu cần)
+# 4. Sửa config.py (model Ollama mặc định, Discord token nếu cần)
+#    API key có thể nhập trực tiếp trong Web UI → tab Change Mode (sẽ được mã hoá)
 
 # 5. Build RAG
 python data/indexer.py
 
 # 6. Chạy (mở terminal trong project folder)
 .\start_localhelpbot.bat
-# Mở http://localhost:11435
+# Mở http://localhost:11435 — vào tab Change Mode để chọn provider/model/API key
 ```

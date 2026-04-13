@@ -14,6 +14,13 @@ raw_data.json
 output.json
 personal_avatar/
 
+# Runtime overrides (contains API keys written by the UI)
+runtime_overrides.json
+.secret_key
+
+# Log files
+*.log
+
 # OS files
 .DS_Store
 Thumbs.db

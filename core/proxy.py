@@ -2,6 +2,7 @@
 RAG-aware + Agentic Ollama proxy  — port 11435
 """
 
+import copy
 import json
 import multiprocessing
 import subprocess
@@ -9,7 +10,7 @@ import sys
 import threading
 import urllib.request
 import urllib.error
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 if __name__ == "__main__":
@@ -173,7 +174,17 @@ def _discord_status():
 _server_ref = None
 _last_heartbeat = 0.0
 _heartbeat_active = False
-HEARTBEAT_TIMEOUT = 15  # seconds without heartbeat → shutdown
+
+_RECENT_STATS = []  # newest-first, capped at 20
+def _record_stat(prompt: str, total_ms: int, active: str, llm_timing: str):
+    _RECENT_STATS.insert(0, {
+        "prompt": (prompt or "")[:120],
+        "total_ms": total_ms,
+        "active": active,
+        "llm": llm_timing,
+    })
+    del _RECENT_STATS[20:]
+HEARTBEAT_TIMEOUT = 45  # seconds without heartbeat → shutdown (safety margin for slow LLM turns)
 
 def _shutdown_all():
     _stop_discord()
@@ -228,6 +239,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
         if self.path == "/api/config":
             from config import DISCORD_SETTINGS, AGENT_PROFILES, AUTOMATION_TASKS, MODEL_PROVIDERS
+            from core.secrets import mask_secret
+            import copy
+            masked_providers = copy.deepcopy(MODEL_PROVIDERS)
+            for _slot in ("primary", "fallback"):
+                _p = masked_providers.get(_slot) or {}
+                if _p.get("api_key"):
+                    _p["api_key"] = mask_secret(_p["api_key"])
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -235,7 +253,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 "discord": DISCORD_SETTINGS,
                 "agents": AGENT_PROFILES,
                 "tasks": AUTOMATION_TASKS,
-                "providers": MODEL_PROVIDERS
+                "providers": masked_providers
             }).encode())
             return
 
@@ -245,6 +263,23 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(json.dumps({"connected": _discord_status()}).encode())
+            return
+
+        if self.path == "/api/permissions/pending":
+            from core.permissions import list_pending
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({"pending": list_pending()}).encode())
+            return
+
+        if self.path == "/api/stats":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({"recent": _RECENT_STATS}).encode())
             return
 
         if self.path == "/api/tags":
@@ -289,16 +324,83 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
         if path == "/api/config":
             try:
-                print(f"[config] Updating settings: {json.dumps(payload)}")
+                import config as _config
+                from pathlib import Path as _Path
+                overrides_path = _Path(_config.__file__).parent / "runtime_overrides.json"
+                existing = {}
+                if overrides_path.exists():
+                    try:
+                        existing = json.loads(overrides_path.read_text(encoding="utf-8"))
+                    except Exception:
+                        existing = {}
+
+                applied = []
+                if "providers" in payload:
+                    from core.secrets import encrypt_secret
+                    incoming = payload["providers"]
+                    # Preserve existing encrypted key if UI echoes the mask
+                    existing_providers = existing.get("providers") or {}
+                    for _slot in ("primary", "fallback"):
+                        _new = incoming.get(_slot) or {}
+                        _key = _new.get("api_key", "")
+                        if _key and set(_key) <= {"•", "*"}:
+                            _new["api_key"] = (existing_providers.get(_slot) or {}).get("api_key", "")
+                    # Persist with encrypted api_key, keep in-memory plaintext
+                    to_persist = copy.deepcopy(incoming)
+                    for _slot in ("primary", "fallback"):
+                        _p = to_persist.get(_slot) or {}
+                        if _p.get("api_key"):
+                            _p["api_key"] = encrypt_secret(_p["api_key"])
+                    existing["providers"] = to_persist
+                    # In-memory stays plaintext for actual API calls
+                    in_mem = copy.deepcopy(incoming)
+                    _config.MODEL_PROVIDERS = in_mem
+                    applied.append("providers")
+                if "agents" in payload:
+                    _config.AGENT_PROFILES = payload["agents"]
+                    existing["agents"] = payload["agents"]
+                    applied.append("agents")
+                if "discord" in payload:
+                    _config.DISCORD_SETTINGS = payload["discord"]
+                    existing["discord"] = payload["discord"]
+                    applied.append("discord")
+                if "tasks" in payload:
+                    _config.AUTOMATION_TASKS = payload["tasks"]
+                    existing["tasks"] = payload["tasks"]
+                    applied.append("tasks")
+
+                overrides_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+
+                if "providers" in payload:
+                    try:
+                        from core.providers import smart_provider
+                        smart_provider.reload()
+                    except Exception as e:
+                        print(f"[config] smart_provider reload failed: {e}")
+
+                print(f"[config] Applied & persisted: {applied}")
                 self.send_response(200)
+                self.send_header("Content-Type", "application/json")
                 self.end_headers()
-                self.wfile.write(json.dumps({"status": "success"}).encode())
+                self.wfile.write(json.dumps({"status": "success", "applied": applied}).encode())
                 return
             except Exception as e:
+                print(f"[config] ERROR: {e}")
                 self.send_response(500)
+                self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(json.dumps({"error": str(e)}).encode())
                 return
+
+        if path == "/api/permissions/resolve":
+            from core.permissions import resolve
+            ok = resolve(payload.get("id", ""), bool(payload.get("approved")), payload.get("scope", "once"))
+            self.send_response(200 if ok else 404)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": ok}).encode())
+            return
 
         if path == "/api/discord/connect":
             ok, msg = _start_discord()
@@ -344,18 +446,33 @@ class ProxyHandler(BaseHTTPRequestHandler):
         model = payload.get("model", "")
 
         if model == AUTO_MODEL and is_chat:
+            import time as _t
             messages = payload.get("messages", [])
             user_q = _last_user_msg(messages)
             print(f"[orchestrator] handling request: {user_q!r}", flush=True)
+            _t0 = _t.perf_counter()
             final_answer = orchestrator.handle_request(user_q, conversation=messages)
+            total_ms = int((_t.perf_counter() - _t0) * 1000)
+            try:
+                from core.providers import smart_provider as _sp
+                last_timing = getattr(_sp, "_last_timing", "")
+                active = f"{_sp._last_provider or '?'}/{_sp._last_model or '?'}"
+            except Exception:
+                last_timing, active = "", "?"
+            print(f"[orchestrator] DONE total={total_ms}ms last={active} {last_timing}", flush=True)
+            _record_stat(user_q, total_ms, active, last_timing)
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("X-Response-Time-Ms", str(total_ms))
+            self.send_header("X-Model-Used", active)
+            self.send_header("X-LLM-Timing", last_timing)
             self.end_headers()
             self.wfile.write(json.dumps({
                 "model": REAL_MODEL,
                 "message": {"role": "assistant", "content": final_answer},
-                "done": True
+                "done": True,
+                "timing": {"total_ms": total_ms, "active": active, "last_llm": last_timing}
             }).encode())
             return
 
@@ -456,7 +573,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
 def main():
     global _server_ref
-    server = HTTPServer(("localhost", PROXY_PORT), ProxyHandler)
+    server = ThreadingHTTPServer(("localhost", PROXY_PORT), ProxyHandler)
+    server.daemon_threads = True
     _server_ref = server
     print(f"[rag-proxy] http://localhost:{PROXY_PORT}", flush=True)
     print(f"  Embed model   : mxbai-embed-large (Ollama)", flush=True)

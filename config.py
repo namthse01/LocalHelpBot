@@ -79,9 +79,28 @@ ALLOWED_CHANNELS = DISCORD_SETTINGS["guilds"].get(DISCORD_SERVER_ID, {}).get("al
 # Define different specialists with their own system prompts and toolsets
 AGENT_PROFILES = {
     "main": {
-        "system_prompt": "You are the Main Orchestrator of LocalHelpBot. Your job is to analyze user requests and delegate to the best specialist if needed. Specialists: 'researcher' (deep RAG), 'coder' (code analysis), 'summarizer' (concise reports).",
+        "system_prompt": (
+            "You are LocalHelpBot's main agent. You HAVE real tools and CAN do things — "
+            "NEVER tell the user you cannot access the web or their filesystem.\n\n"
+            "To use a tool, emit EXACTLY one line of JSON prefixed with `ACTION:` like:\n"
+            "  ACTION: {\"tool\": \"fetch_url\", \"url\": \"https://example.com\"}\n"
+            "  ACTION: {\"tool\": \"read_file\", \"path\": \"D:/some/file.txt\"}\n"
+            "  ACTION: {\"tool\": \"list_dir\", \"path\": \"D:/Code\"}\n"
+            "  ACTION: {\"tool\": \"grep_file\", \"path\": \"x.py\", \"pattern\": \"def foo\"}\n"
+            "  ACTION: {\"tool\": \"search_web\", \"query\": \"site:docs.python.org pathlib\"}\n"
+            "  ACTION: {\"tool\": \"write_file\", \"path\": \"out.txt\", \"content\": \"...\"}\n"
+            "  ACTION: {\"tool\": \"run_command\", \"command\": \"ls\", \"cwd\": \"D:/Code\"}\n"
+            "  ACTION: {\"tool\": \"delegate\", \"agent\": \"coder\", \"prompt\": \"...\"}\n\n"
+            "Rules:\n"
+            "- If the user gives a URL or asks about a website, fetch_url it.\n"
+            "- If the user asks about their local files/folders, use read_file/list_dir/grep_file.\n"
+            "- write_file and run_command will PROMPT the user for permission — just call them; "
+            "if they deny, the tool returns PERMISSION_DENIED and you must stop and tell the user.\n"
+            "- After a tool result comes back, either call another tool or give the final answer.\n"
+            "- Emit ONLY ONE ACTION per turn. No markdown around the ACTION line."
+        ),
         "model": "qwen3.5:latest",
-        "tools": ["delegate", "search_web"]
+        "tools": ["delegate", "search_web", "fetch_url", "read_file", "list_dir", "grep_file", "write_file", "run_command"]
     },
     "researcher": {
         "system_prompt": "You are a Deep Research Specialist. Use RAG tools to find exhaustive information. Be thorough and cite sources.",
@@ -116,3 +135,33 @@ AUTOMATION_TASKS = [
         "recipient": 1436893850139496673,
     }
 ]
+
+# ── Runtime overrides ───────────────────────────────────────────
+# If runtime_overrides.json exists next to config.py, it replaces matching keys
+# (MODEL_PROVIDERS, AGENT_PROFILES, DISCORD_SETTINGS, AUTOMATION_TASKS) in memory.
+# The UI "Apply Mode Changes" button writes to that file.
+import json as _json
+_OVERRIDES_PATH = os.path.join(os.path.dirname(__file__), "runtime_overrides.json")
+if os.path.exists(_OVERRIDES_PATH):
+    try:
+        with open(_OVERRIDES_PATH, "r", encoding="utf-8") as _f:
+            _ov = _json.load(_f)
+        if "providers" in _ov:
+            MODEL_PROVIDERS = _ov["providers"]
+            # Decrypt api_key fields in-memory (they are stored encrypted on disk)
+            try:
+                from core.secrets import decrypt_secret as _dec
+                for _slot in ("primary", "fallback"):
+                    _p = MODEL_PROVIDERS.get(_slot) or {}
+                    if _p.get("api_key"):
+                        _p["api_key"] = _dec(_p["api_key"])
+            except Exception as _de:
+                print(f"[config] Could not decrypt api_key: {_de}")
+        if "agents" in _ov:
+            AGENT_PROFILES = _ov["agents"]
+        if "discord" in _ov:
+            DISCORD_SETTINGS = _ov["discord"]
+        if "tasks" in _ov:
+            AUTOMATION_TASKS = _ov["tasks"]
+    except Exception as _e:
+        print(f"[config] Failed to load runtime_overrides.json: {_e}")

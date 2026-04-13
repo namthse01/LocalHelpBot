@@ -218,11 +218,31 @@ def search_web(query: str) -> str:
 # TOOL REGISTRY
 # ──────────────────────────────────────────
 
+def _gated_write_file(a):
+    from core.permissions import request_permission
+    path = a["path"]
+    preview = (a.get("content", "") or "")[:300]
+    decision = request_permission("write_file", path, {"path": path, "bytes": len(a.get("content", "")), "preview": preview})
+    if not decision["allowed"]:
+        return f"PERMISSION_DENIED: user declined write_file for {path} ({decision['reason']})."
+    return write_file(path, a["content"])
+
+
+def _gated_run_command(a):
+    from core.permissions import request_permission
+    cmd = a["command"]
+    cwd = a.get("cwd")
+    decision = request_permission("run_command", cmd, {"command": cmd, "cwd": cwd})
+    if not decision["allowed"]:
+        return f"PERMISSION_DENIED: user declined run_command `{cmd}` ({decision['reason']})."
+    return run_command(cmd, cwd)
+
+
 FILE_TOOLS = {
     "read_file":    lambda a: read_file(a["path"]),
-    "write_file":   lambda a: write_file(a["path"], a["content"]),
+    "write_file":   _gated_write_file,
     "list_dir":     lambda a: list_dir(a.get("path", ".")),
-    "run_command":  lambda a: run_command(a["command"], a.get("cwd")),
+    "run_command":  _gated_run_command,
     "grep_file":    lambda a: grep_file(a["path"], a["pattern"]),
 }
 

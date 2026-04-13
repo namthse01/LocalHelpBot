@@ -116,17 +116,26 @@ def _recovery_hint(tool_name: str, result: str) -> str:
     ).format(result=result)
 
 def run_agent(messages: list, tools: dict, stream_cb=None) -> str:
+    import time as _time
     conversation = list(messages)
     error_streak = 0
     MAX_ERROR_STREAK = 5
+    t_start = _time.perf_counter()
+    turn_timings = []
 
     for turn in range(MAX_TURNS):
         # Use the smart provider (API -> Local fallback)
+        t_turn = _time.perf_counter()
         response = smart_provider.chat(conversation)
+        turn_ms = int((_time.perf_counter() - t_turn) * 1000)
+        turn_timings.append(turn_ms)
+        logger.info(f"[agent] turn {turn+1} — {response.provider}/{response.model} {response.timing_str()}")
         content = response.content
 
         match = ACTION_RE.search(content)
         if not match:
+            total_ms = int((_time.perf_counter() - t_start) * 1000)
+            logger.info(f"[agent] DONE in {turn+1} turn(s), {total_ms}ms total (per-turn: {turn_timings})")
             return content
 
         before_action = content[:match.start()].strip()

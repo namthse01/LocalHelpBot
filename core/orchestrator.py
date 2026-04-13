@@ -1,8 +1,7 @@
-import json
 import logging
 from typing import Dict, List, Any, Optional, Callable
-from config import AGENT_PROFILES, OLLAMA_BASE, CHAT_MODEL
-import urllib.request
+from config import AGENT_PROFILES
+from core.providers import smart_provider
 
 logger = logging.getLogger(__name__)
 
@@ -11,24 +10,14 @@ class AgentOrchestrator:
         self.tools_registry = tools_registry
         self.active_sessions = {}
 
-    def _ollama_chat(self, model: str, messages: List[Dict[str, str]]) -> str:
-        """Internal helper to call Ollama API."""
-        body = json.dumps({
-            "model": model,
-            "messages": messages,
-            "stream": False,
-            "options": {"temperature": 0.2, "num_predict": 2048},
-        }).encode()
-
-        req = urllib.request.Request(
-            OLLAMA_BASE + "/api/chat",
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST"
+    def _runtime_block(self, agent_name: str, profile: Dict[str, Any]) -> str:
+        info = smart_provider.describe()
+        active = info['last_used_provider'] or info['primary_provider']
+        active_m = info['last_used_model'] or info['primary_model']
+        return (
+            f"\n[agent={agent_name} active={active}/{active_m} "
+            f"fallback={info['fallback_provider']}/{info['fallback_model']}]"
         )
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            data = json.loads(resp.read())
-        return data["message"]["content"]
 
     def run_specialist(self, agent_name: str, prompt: str, conversation: Optional[List[Dict[str, str]]] = None) -> str:
         """
@@ -38,8 +27,9 @@ class AgentOrchestrator:
         if not profile:
             return f"ERROR: Specialist '{agent_name}' not found."
 
-        # Initialize conversation with system prompt
-        messages = [{"role": "system", "content": profile["system_prompt"]}]
+        # Initialize conversation with system prompt + runtime info
+        system_content = profile["system_prompt"] + self._runtime_block(agent_name, profile)
+        messages = [{"role": "system", "content": system_content}]
         if conversation:
             messages.extend(conversation)
         messages.append({"role": "user", "content": prompt})

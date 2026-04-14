@@ -6,7 +6,8 @@
       "Bash(curl:*)",
       "Bash(netstat -ano)",
       "Bash(findstr :11435)",
-      "Bash(wc -l \"d:/Code/yolo/Claude_Code/LocalHelpBot/core/\"*.py)"
+      "Bash(wc -l \"d:/Code/yolo/Claude_Code/LocalHelpBot/core/\"*.py)",
+      "Bash(xargs head:*)"
     ]
   }
 }

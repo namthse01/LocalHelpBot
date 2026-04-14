@@ -392,6 +392,44 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({"error": str(e)}).encode())
                 return
 
+        if path == "/api/memory/summarize":
+            # Tier-1 in-session memory compression.
+            # Client posts the oldest slice of chat history; we return a short
+            # summary that the client substitutes back in as a single system
+            # message. Keeps long chats coherent without dropping context.
+            try:
+                from core.providers import smart_provider
+                msgs = payload.get("messages", []) or []
+                convo = "\n".join(
+                    f"{m.get('role','user')}: {str(m.get('content',''))[:2000]}"
+                    for m in msgs if m.get("content")
+                )
+                summary = ""
+                if convo.strip():
+                    prompt = [
+                        {"role": "system", "content": (
+                            "You compress chat history. Output a concise 3rd-person summary "
+                            "(<=200 words) capturing: user goals, decisions made, key facts/"
+                            "results (numbers, names, file paths), and open threads. "
+                            "No preamble — just the summary."
+                        )},
+                        {"role": "user", "content": f"Summarize this conversation:\n\n{convo}"},
+                    ]
+                    resp = smart_provider.chat(prompt)
+                    summary = (resp.content or "").strip()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps({"summary": summary}).encode())
+            except Exception as e:
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e), "summary": ""}).encode())
+            return
+
         if path == "/api/permissions/resolve":
             from core.permissions import resolve
             ok = resolve(payload.get("id", ""), bool(payload.get("approved")), payload.get("scope", "once"))

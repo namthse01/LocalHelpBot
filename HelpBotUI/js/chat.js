@@ -1,4 +1,76 @@
 // Chat bubble rendering + /api/chat streaming loop.
+//
+// ── Session memory ───────────────────────────────────────────────
+// Full conversation is kept in `window.chatHistory` for the lifetime
+// of the tab. Every /api/chat request resends a sliding window of the
+// most recent turns so the model sees prior context. Cleared by
+// clearChat(). No persistence — reload = fresh session.
+//
+//   MEMORY_MAX_MESSAGES : hard cap on turns resent (sliding window)
+//   MEMORY_MAX_CHARS    : soft cap on total payload chars (cheap token proxy)
+// ─────────────────────────────────────────────────────────────────
+const MEMORY_MAX_MESSAGES      = 30;
+const MEMORY_MAX_CHARS         = 24000;
+// Tier-1 compression: once history gets long, fold the oldest slice into a
+// single `system` summary so context is preserved (not dropped) when the
+// sliding window clips. Cost: one extra LLM call, amortized across many turns.
+const MEMORY_COMPRESS_TRIGGER  = 24;  // turns before we compress
+const MEMORY_KEEP_RECENT       = 12;  // most recent turns always kept verbatim
+
+window.chatHistory = window.chatHistory || [];
+
+function pushHistory(role, content) {
+    if (!content) return;
+    window.chatHistory.push({ role, content, ts: Date.now() });
+}
+
+async function maybeCompressHistory() {
+    // Fold oldest turns into a summary system-message when the log grows long.
+    // Safe to fail: on error we leave history intact and let the sliding
+    // window handle overflow.
+    if (window.chatHistory.length <= MEMORY_COMPRESS_TRIGGER) return;
+    const cut = window.chatHistory.length - MEMORY_KEEP_RECENT;
+    const toSummarize = window.chatHistory.slice(0, cut);
+    const keep        = window.chatHistory.slice(cut);
+    // Don't re-summarize an existing summary — just extend it.
+    const priorSummary = (toSummarize[0] && toSummarize[0].role === 'system')
+        ? toSummarize[0].content : '';
+    try {
+        const resp = await fetch('/api/memory/summarize', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                messages: toSummarize.map(m => ({ role: m.role, content: m.content }))
+            })
+        });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const summary = (data && data.summary) ? data.summary.trim() : '';
+        if (!summary) return;
+        const merged = priorSummary
+            ? `Prior conversation summary (updated):\n${summary}`
+            : `Prior conversation summary:\n${summary}`;
+        window.chatHistory = [
+            { role: 'system', content: merged, ts: Date.now() },
+            ...keep
+        ];
+    } catch (e) { /* keep original history; sliding window still protects */ }
+}
+
+function buildContextWindow() {
+    // Sliding window: most recent N messages, trimmed by char budget.
+    const hist = window.chatHistory.slice(-MEMORY_MAX_MESSAGES);
+    let budget = MEMORY_MAX_CHARS;
+    const out = [];
+    for (let i = hist.length - 1; i >= 0; i--) {
+        const m = hist[i];
+        const len = (m.content || '').length;
+        if (budget - len < 0 && out.length > 0) break;
+        budget -= len;
+        out.unshift({ role: m.role, content: m.content });
+    }
+    return out;
+}
 
 function setModel(model) {
     window.currentModel = model;
@@ -28,6 +100,7 @@ function clearChat() {
     const chatWindow = $id('chat-window');
     if (!chatWindow) return;
     chatWindow.innerHTML = '';
+    window.chatHistory = [];
     appendMessage('bot', 'Chat cleared. How can I help you today?');
 }
 
@@ -38,8 +111,11 @@ async function sendMessage() {
     if (!text) return;
 
     appendMessage('user', text);
+    pushHistory('user', text);
     input.value = '';
     input.style.height = 'auto';
+
+    await maybeCompressHistory();
 
     const panel = createActivityPanel();
     const ctx = { pendingTools: {} };
@@ -51,7 +127,7 @@ async function sendMessage() {
             headers: { 'Content-Type': 'application/json', 'Accept': 'application/x-ndjson' },
             body: JSON.stringify({
                 model: window.currentModel,
-                messages: [{ role: 'user', content: text }],
+                messages: buildContextWindow(),
                 stream: true
             })
         });
@@ -85,8 +161,12 @@ async function sendMessage() {
                 }
             }
         }
-        if (finalText) appendMessage('bot', finalText);
-        else panel.metaEl.innerHTML = `<i class="fas fa-check text-emerald-400"></i> done`;
+        if (finalText) {
+            appendMessage('bot', finalText);
+            pushHistory('assistant', finalText);
+        } else {
+            panel.metaEl.innerHTML = `<i class="fas fa-check text-emerald-400"></i> done`;
+        }
     } catch (error) {
         panel.metaEl.innerHTML = `<i class="fas fa-times text-red-400"></i> error`;
         appendMessage('bot', `❌ Error: ${error.message}`);

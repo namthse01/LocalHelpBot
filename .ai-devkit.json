@@ -1,0 +1,21 @@
+{
+  "version": "0.22.0",
+  "environments": [
+    "cursor",
+    "claude",
+    "github",
+    "gemini",
+    "antigravity"
+  ],
+  "phases": [
+    "requirements",
+    "design",
+    "planning",
+    "implementation",
+    "testing",
+    "deployment",
+    "monitoring"
+  ],
+  "createdAt": "2026-04-14T15:29:50.313Z",
+  "updatedAt": "2026-04-14T15:29:50.350Z"
+}

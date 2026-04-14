@@ -36,6 +36,22 @@ logger = logging.getLogger(__name__)
 
 MAX_TURNS = 20
 MAX_ERROR_STREAK = 5
+# Self-healing budgets (bounded retries — pattern borrowed from openclaw's
+# auto-fix loops: classify the failure, retry with escalating guidance,
+# escalate to the user only after the budget is spent).
+MAX_PARSE_RETRIES = 3  # malformed tool_use JSON
+MAX_WRITE_NUDGES = 3   # user asked to write a file but agent keeps skipping
+
+# Signatures that strongly suggest the model TRIED to call a tool but emitted
+# malformed JSON (so our 3 parsers all silently missed it). Used to distinguish
+# "truly done" from "attempted-but-broken-syntax".
+_TOOL_ATTEMPT_MARKERS = re.compile(
+    r'(<tool_use\b|```tool_use\b|\bACTION:\s*\{|"(?:name|tool)"\s*:\s*"'
+    r'(?:write_file|edit_file|read_file|read_pdf|write_pdf|read_docx|write_docx|'
+    r'run_command|search_web|fetch_url|grep_file|glob_files|list_dir|python_exec|'
+    r'install_package|read_file_chunk)")',
+    re.IGNORECASE,
+)
 
 # Parsers for the 3 supported tool-use encodings
 _TAG_RE = re.compile(r"<tool_use>\s*(\{.*?\})\s*</tool_use>", re.DOTALL)
@@ -236,6 +252,73 @@ def _strip_tool_uses(content: str) -> str:
     return content.strip()
 
 
+def _detect_malformed_tool_attempt(content: str) -> Optional[str]:
+    """Return a diagnostic string if the content *looks like* an attempted tool
+    call that failed to parse, else None. Classifies the failure so the nudge
+    back to the model is specific (openclaw-style: name the error → fix it)."""
+    if not content:
+        return None
+    if not _TOOL_ATTEMPT_MARKERS.search(content):
+        return None
+    # Try to locate the first bare-JSON-looking block and capture the decode error.
+    for m in _BARE_JSON_RE.finditer(content):
+        i = content.find("{", m.start())
+        if i < 0:
+            continue
+        try:
+            json.JSONDecoder().raw_decode(content[i:])
+            return None  # parses fine — real issue is elsewhere (not malformed)
+        except json.JSONDecodeError as e:
+            snippet = content[i:i + 240].replace("\n", "\\n")
+            return (f"JSONDecodeError at pos {e.pos}: {e.msg}. "
+                    f"Offending snippet: {snippet}…")
+    # No bare-JSON match but a marker was found (e.g. unclosed <tool_use>)
+    return "Tool-use marker present but no valid JSON object could be extracted."
+
+
+def _parse_error_nudge(diag: str, retry_idx: int) -> str:
+    escalations = [
+        # First try: gentle, explain the encoding.
+        ("Your previous message looked like a tool_use call but its JSON was "
+         "malformed and could not be parsed. Re-emit it using this EXACT format:\n"
+         "<tool_use>{\"name\": \"<tool>\", \"input\": {\"path\": \"...\", \"content\": \"...\"}}</tool_use>\n"
+         "Rules for the `content` string:\n"
+         "  • Escape every newline as \\n (NOT a raw line break).\n"
+         "  • Escape every double-quote as \\\".\n"
+         "  • Escape every backslash as \\\\.\n"
+         "Emit ONE tool_use block only."),
+        # Second try: blame length, suggest chunking.
+        ("Still malformed. Your content string is probably too long with too "
+         "many fragile escapes. Strategy: emit write_file with a SHORT content "
+         "(just the first section ~2KB). On the next turn, call edit_file to "
+         "append the rest. Split the work."),
+        # Third try: last chance.
+        ("Final retry. Emit a MINIMAL <tool_use> with very short content (<500 "
+         "chars). If you cannot produce valid JSON, stop and tell the user "
+         "exactly which tool you were trying to call and why it failed."),
+    ]
+    idx = min(retry_idx, len(escalations) - 1)
+    return f"{escalations[idx]}\n\nParser diagnostic: {diag}"
+
+
+def _write_nudge_text(retry_idx: int) -> str:
+    escalations = [
+        ("You have NOT called a write_* tool yet, but the user asked you to "
+         "save the result to a file. Do NOT stop here. Emit ONE write_file / "
+         "write_pdf / write_docx tool_use now with the final content at the "
+         "EXACT path the user requested — do NOT rename the file or change "
+         "the directory."),
+        ("Still no write_* call. Check the user's original request again: "
+         "use the EXACT filename and EXACT directory they specified. If the "
+         "content is long, emit write_file with the first chunk now, then "
+         "append with edit_file on subsequent turns."),
+        ("Last attempt. Either emit a valid write_* tool_use at the exact "
+         "path requested, or report clearly to the user that you cannot "
+         "produce the file and explain why."),
+    ]
+    return escalations[min(retry_idx, len(escalations) - 1)]
+
+
 def _suggest_alternative(tool_name: str, result: str) -> str:
     """Heuristic: map common failure signatures to a concrete next-step tool."""
     r = result or ""
@@ -323,7 +406,8 @@ def run_agent(
         or bool(re.search(r"\binto\s+a?\s*\.?(?:pdf|docx|md|txt|csv|json)\b", _first_user, re.IGNORECASE))
     )
     _write_done = False
-    _write_nudged = False
+    _write_nudge_count = 0
+    _parse_retry_count = 0
 
     for turn in range(max_turns):
         _emit(stream_cb, {"type": "status", "text": f"Turn {turn + 1}: thinking…"})
@@ -339,26 +423,45 @@ def run_agent(
         if narration:
             _emit(stream_cb, {"type": "thought", "text": narration, "turn_ms": turn_ms})
 
-        # No tool calls → END TURN, UNLESS the user asked for a file output
-        # and no write_* tool has fired yet. Nudge the model once.
+        # No tool calls parsed. Three possibilities — classify before ending:
+        #   (a) Attempted tool_use but malformed JSON — retry with diagnostic
+        #   (b) User expected a file write and none happened yet — re-nudge
+        #   (c) Genuinely done — emit final
         if not calls:
-            if _expects_write and not _write_done and not _write_nudged:
-                _write_nudged = True
-                nudge = (
-                    "You have NOT called a write_* tool yet, but the user asked you to "
-                    "save/write the result to a file. Do NOT stop here. Emit ONE write_file / "
-                    "write_pdf / write_docx tool_use now with the final content at the path "
-                    "the user requested. If only a directory was given, pick a reasonable "
-                    "filename (e.g. summary.pdf) inside it."
-                )
-                _emit(stream_cb, {"type": "status", "text": "nudging agent to write output…"})
+            # (a) Malformed tool_use detection — self-heal via specific nudge
+            diag = _detect_malformed_tool_attempt(content)
+            if diag and _parse_retry_count < MAX_PARSE_RETRIES:
+                _parse_retry_count += 1
+                nudge = _parse_error_nudge(diag, _parse_retry_count - 1)
+                _emit(stream_cb, {
+                    "type": "status",
+                    "text": f"malformed tool_use — self-healing (attempt {_parse_retry_count}/{MAX_PARSE_RETRIES})",
+                })
+                logger.warning(f"[agent] parse retry {_parse_retry_count}: {diag[:200]}")
                 conversation.append({"role": "assistant", "content": content})
                 conversation.append({"role": "user", "content": nudge})
                 continue
+
+            # (b) Write expected but not done — re-armable nudge (up to MAX_WRITE_NUDGES)
+            if _expects_write and not _write_done and _write_nudge_count < MAX_WRITE_NUDGES:
+                _write_nudge_count += 1
+                nudge = _write_nudge_text(_write_nudge_count - 1)
+                _emit(stream_cb, {
+                    "type": "status",
+                    "text": f"nudging agent to write output ({_write_nudge_count}/{MAX_WRITE_NUDGES})…",
+                })
+                conversation.append({"role": "assistant", "content": content})
+                conversation.append({"role": "user", "content": nudge})
+                continue
+
+            # (c) Truly done
             total_ms = int((_time.perf_counter() - t_start) * 1000)
             logger.info(f"[agent] DONE in {turn+1} turn(s), {total_ms}ms total")
             _emit(stream_cb, {"type": "final", "text": content, "total_ms": total_ms, "turns": turn + 1})
             return content
+
+        # A successful parse resets the parse-retry counter.
+        _parse_retry_count = 0
 
         # Execute all tool calls from this turn (serially but in declared order)
         results = []

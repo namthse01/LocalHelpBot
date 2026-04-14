@@ -310,11 +310,75 @@ Agent chính có các tool sau và sẽ tự gọi khi cần:
 
 | Tool | Loại | Có xin phép? |
 |---|---|---|
-| `read_file`, `list_dir`, `grep_file` | Đọc file cục bộ | ❌ (read-only) |
+| `read_file`, `list_dir`, `grep_file`, `glob_files` | Đọc file cục bộ | ❌ (read-only) |
 | `search_web`, `fetch_url` | Tìm kiếm / đọc trang web | ❌ (read-only) |
-| `write_file` | Ghi file vào ổ đĩa | ✅ **hỏi qua modal** |
+| `write_file`, `edit_file` | Ghi / sửa file | ✅ **hỏi qua modal** |
 | `run_command` | Chạy shell command | ✅ **hỏi qua modal** |
-| `delegate` | Giao việc cho specialist khác | ❌ |
+| `delete_file`, `move_file` | Xoá / di chuyển file (plugin `fs_extra`) | ✅ **hỏi qua modal** |
+| `make_dir` | Tạo thư mục (plugin `fs_extra`) | ❌ |
+| `python_exec` | Chạy snippet Python trong subprocess (plugin `exec_tools`) | ✅ **hỏi qua modal** |
+| `list_processes` | Liệt kê process đang chạy (plugin `exec_tools`) | ❌ |
+| `kill_process` | Terminate pid (plugin `exec_tools`) | ✅ **hỏi qua modal** |
+| `install_package` | `pip install` một package PyPI (plugin `package_tools`) | ✅ **hỏi qua modal — kèm 'reason'** |
+| `read_file_chunk` | Đọc file text lớn theo dòng/byte range (plugin `document_tools`) | ❌ |
+| `read_pdf` | Trích text PDF theo page range (cần `pypdf`) | ❌ |
+| `write_pdf` | Tạo PDF từ text (cần `reportlab`) | ✅ |
+| `read_docx` | Đọc Word .docx (cần `python-docx`) | ❌ |
+| `write_docx` | Tạo Word .docx từ text (cần `python-docx`) | ✅ |
+| `task` / `delegate` | Giao việc cho specialist khác | ❌ |
+
+### Plugin system — thêm tool mới không sửa core
+
+Toàn bộ tool ngoài 10 tool mặc định được load tự động từ thư mục [core/plugins/](core/plugins/). Mỗi file plugin chỉ cần expose một hàm `register(registry)`:
+
+```python
+# core/plugins/my_tool.py
+from core.tool_schema import Tool, ToolRegistry
+from core.permissions import request_permission  # nếu cần xin phép
+
+def _handler(args):
+    return f"OK: got {args}"
+
+def register(registry: ToolRegistry) -> None:
+    registry.register(Tool(
+        name="my_tool",
+        description="What it does.",
+        input_schema={"type": "object", "properties": {"x": {"type": "string"}}, "required": ["x"]},
+        handler=_handler,
+        requires_permission=False,  # set True để trigger modal
+        category="misc",
+    ))
+```
+
+Thả file vào [core/plugins/](core/plugins/) → restart proxy → thêm tên tool vào `AGENT_PROFILES[...]["tools"]` trong [config.py](config.py) → agent có thể gọi được.
+
+Plugin load qua `core.tool_schema.load_plugins()` — lỗi ở 1 plugin sẽ được log và skip, không làm crash các plugin khác.
+
+### Self-extension: agent tự cài tool khi thiếu
+
+Khi một tool fail với `ModuleNotFoundError: No module named 'X'` hoặc shell `EXIT: 127`, agent loop tự chèn hint gợi ý gọi `install_package`. Flow mẫu:
+
+1. Agent gọi `python_exec` với code dùng `pandas` → fail `ModuleNotFoundError: pandas`.
+2. Agent loop feedback kèm hint: *"install_package name=pandas reason=..."*.
+3. Agent gọi `install_package` — **modal xin phép hiện tên package + lý do**.
+4. User approve → pip install → agent retry `python_exec` thành công.
+
+`install_package` chỉ chấp nhận tên PyPI hợp lệ (regex `[A-Za-z0-9._-]+`, cộng `[extras]` và version specifier). Không cho phép URL, git+, hay path — giảm blast radius.
+
+### Ví dụ luồng gọi tool đầy đủ
+
+```
+User: "Đếm số dòng Python trong dự án, group theo thư mục."
+
+Turn 1 (agent):                PLAN — dùng glob_files + python_exec để đếm.
+Turn 2 (agent):                <tool_use>{"name":"glob_files","input":{"pattern":"**/*.py"}}</tool_use>
+                               → OK: 47 files
+Turn 3 (agent):                <tool_use>{"name":"python_exec","input":{
+                                 "code":"import pathlib,collections; ..."}}</tool_use>
+                               → modal xin phép python_exec → user Allow once
+                               → STDOUT: core/ 12, data/ 3, scripts/ 2 ...
+Turn 4 (agent):                final answer (no tool_use).
+```
 
 **Modal xin phép** hiện ra trong Web UI mỗi khi agent muốn ghi file hoặc chạy lệnh, với 4 lựa chọn:
 

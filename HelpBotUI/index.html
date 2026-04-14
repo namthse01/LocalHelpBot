@@ -29,6 +29,13 @@
         .activity-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; color:#94a3b8; font-size:11px; text-transform:uppercase; letter-spacing:.05em; }
         .spinner { display:inline-block; width:10px; height:10px; border:2px solid #475569; border-top-color:#818cf8; border-radius:50%; animation:spin .8s linear infinite; }
         @keyframes spin { to { transform: rotate(360deg); } }
+        .activity-row.compact { padding:2px 0; border-bottom:0; cursor:pointer; user-select:none; }
+        .activity-row.compact:hover .tool-name { color:#c7d2fe; }
+        .activity-chev { display:inline-block; width:10px; color:#64748b; font-size:9px; transition:transform .15s; margin-right:4px; }
+        .activity-row.open .activity-chev { transform:rotate(90deg); }
+        .activity-arg-chip { font-size:11px; color:#818cf8; background:#1e293b; padding:1px 6px; border-radius:4px; margin-left:4px; }
+        .activity-detail { display:none; margin:4px 0 6px 26px; padding:8px 10px; background:#0f172a; border-left:2px solid #334155; border-radius:4px; font-size:11px; white-space:pre-wrap; color:#94a3b8; max-height:220px; overflow-y:auto; }
+        .activity-row.open + .activity-detail { display:block; }
     </style>
 </head>
 <body class="flex flex-col h-screen overflow-hidden">
@@ -410,6 +417,35 @@
             return row;
         }
 
+        function shortArg(args) {
+            if (!args || typeof args !== 'object') return '';
+            const keys = ['path', 'file_path', 'file', 'filename', 'url', 'query', 'pattern', 'command', 'name'];
+            for (const k of keys) {
+                if (args[k]) {
+                    const v = String(args[k]);
+                    const base = v.split(/[\\/]/).pop();
+                    return base.length > 60 ? base.slice(0, 57) + '…' : base;
+                }
+            }
+            return '';
+        }
+
+        function addCompactRow(panel, iconHtml, labelHtml, detailText) {
+            const row = document.createElement('div');
+            row.className = 'activity-row compact';
+            const hasDetail = detailText && detailText.trim().length > 0;
+            row.innerHTML = `<div class="activity-icon">${iconHtml}</div><div class="activity-body">${hasDetail ? '<span class="activity-chev">▶</span>' : '<span style="display:inline-block;width:14px"></span>'}${labelHtml}</div>`;
+            panel.rowsEl.appendChild(row);
+            const detail = document.createElement('div');
+            detail.className = 'activity-detail';
+            detail.textContent = detailText || '';
+            panel.rowsEl.appendChild(detail);
+            if (hasDetail) row.addEventListener('click', () => row.classList.toggle('open'));
+            const chatWindow = $id('chat-window');
+            if (chatWindow) chatWindow.scrollTop = chatWindow.scrollHeight;
+            return { row, detail };
+        }
+
         function renderAgentEvent(panel, ev, ctx) {
             if (!ev || !ev.type) return;
             if (ev.type === 'status') {
@@ -417,35 +453,52 @@
                 return;
             }
             if (ev.type === 'agent_start') {
-                addActivityRow(panel, '<i class="fas fa-play text-indigo-400"></i>',
-                    `<span class="muted">agent</span> <span class="tool-name">${escapeHtml(ev.agent)}</span> started`);
+                addCompactRow(panel, '<i class="fas fa-play text-indigo-400"></i>',
+                    `<span class="muted">agent</span> <span class="tool-name">${escapeHtml(ev.agent)}</span> <span class="muted">started</span>`, '');
                 return;
             }
             if (ev.type === 'thought') {
-                addActivityRow(panel, '<i class="fas fa-lightbulb text-amber-400"></i>',
-                    `<span class="activity-thought">${escapeHtml(ev.text)}</span>`);
+                if (!ctx.thoughtPair) {
+                    ctx.thoughtStart = Date.now();
+                    ctx.thoughtPair = addCompactRow(panel, '<i class="fas fa-lightbulb text-amber-400"></i>',
+                        `<span class="tool-name">Thinking…</span>`, ev.text || '');
+                } else {
+                    ctx.thoughtPair.detail.textContent += (ev.text || '');
+                }
                 return;
             }
             if (ev.type === 'tool_call') {
-                let args = '';
-                try { args = JSON.stringify(ev.args || {}); } catch(e) { args = String(ev.args); }
-                if (args.length > 240) args = args.slice(0, 240) + '…';
-                const row = addActivityRow(panel, '<i class="fas fa-bolt text-sky-400"></i>',
-                    `<span class="tool-name">${escapeHtml(ev.tool)}</span> <span class="muted">${escapeHtml(args)}</span><div class="tool-result muted" style="margin-top:4px"><span class="spinner"></span> running…</div>`);
-                ctx.pendingTools[ev.id] = row;
+                if (ctx.thoughtPair) {
+                    const secs = Math.max(1, Math.round((Date.now() - ctx.thoughtStart) / 1000));
+                    const body = ctx.thoughtPair.row.querySelector('.activity-body');
+                    if (body) {
+                        const name = body.querySelector('.tool-name');
+                        if (name) name.textContent = `Thought for ${secs}s`;
+                    }
+                    ctx.thoughtPair = null;
+                }
+                let argsJson = '';
+                try { argsJson = JSON.stringify(ev.args || {}, null, 2); } catch(e) { argsJson = String(ev.args); }
+                const chip = shortArg(ev.args);
+                const pair = addCompactRow(panel,
+                    '<i class="fas fa-bolt text-sky-400"></i>',
+                    `<span class="tool-name">${escapeHtml(ev.tool)}</span>${chip ? `<span class="activity-arg-chip">${escapeHtml(chip)}</span>` : ''} <span class="muted"><span class="spinner"></span> running…</span>`,
+                    argsJson);
+                ctx.pendingTools[ev.id] = pair;
                 return;
             }
             if (ev.type === 'tool_result') {
-                const row = ctx.pendingTools[ev.id];
-                const preview = (ev.preview || '').slice(0, 400);
+                const pair = ctx.pendingTools[ev.id];
+                const preview = ev.preview || '';
                 const cls = ev.ok ? 'ok' : 'err';
                 const icon = ev.ok ? '✓' : '✗';
-                if (row) {
-                    const res = row.querySelector('.tool-result');
-                    if (res) res.innerHTML = `<span class="${cls}">${icon}</span> <span class="muted">${escapeHtml(preview)}</span>`;
+                if (pair) {
+                    const body = pair.row.querySelector('.activity-body .muted');
+                    if (body) body.innerHTML = `<span class="${cls}">${icon}</span>`;
+                    if (preview) pair.detail.textContent = preview;
                 } else {
-                    addActivityRow(panel, `<span class="${cls}">${icon}</span>`,
-                        `<span class="tool-name">${escapeHtml(ev.tool||'tool')}</span> <span class="muted">${escapeHtml(preview)}</span>`);
+                    addCompactRow(panel, `<span class="${cls}">${icon}</span>`,
+                        `<span class="tool-name">${escapeHtml(ev.tool||'tool')}</span>`, preview);
                 }
                 return;
             }

@@ -11,8 +11,13 @@ into Tool objects so the agent loop can:
 
 from __future__ import annotations
 
+import importlib
+import logging
+import pkgutil
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -144,4 +149,36 @@ def build_default_registry() -> ToolRegistry:
             category="web",
         ),
     ])
+    load_plugins(reg)
     return reg
+
+
+def load_plugins(registry: "ToolRegistry") -> List[str]:
+    """Discover and register every plugin in core.plugins.
+
+    Each plugin module must expose `register(registry: ToolRegistry) -> None`.
+    Returns the list of plugin module names loaded (useful for logging/tests).
+    Failures in one plugin never abort the rest — they're logged and skipped.
+    """
+    loaded: List[str] = []
+    try:
+        pkg = importlib.import_module("core.plugins")
+    except ModuleNotFoundError:
+        return loaded
+    for info in pkgutil.iter_modules(pkg.__path__):
+        if info.name.startswith("_"):
+            continue
+        mod_name = f"core.plugins.{info.name}"
+        try:
+            mod = importlib.import_module(mod_name)
+            reg_fn = getattr(mod, "register", None)
+            if callable(reg_fn):
+                reg_fn(registry)
+                loaded.append(info.name)
+            else:
+                logger.warning(f"[plugins] {mod_name} has no register() — skipping")
+        except Exception as e:
+            logger.exception(f"[plugins] failed to load {mod_name}: {e}")
+    if loaded:
+        logger.info(f"[plugins] loaded: {', '.join(loaded)}")
+    return loaded

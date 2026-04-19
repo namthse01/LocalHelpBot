@@ -20,6 +20,8 @@ import re
 from dataclasses import dataclass, field
 from typing import List
 
+from core.memory import extract_summary, merge_summary
+
 
 # ── Regex kit ────────────────────────────────────────────────────
 # Windows path: drive letter + separators. Anchored on drive prefix so we
@@ -115,18 +117,20 @@ _OUTPUT_CONTRACT = (
     "    Do NOT rename, relocate, or invent a different directory.\n"
     "  • For tool calls, emit: <tool_use>{\"name\":\"...\",\"input\":{...}}</tool_use>\n"
     "    Inside JSON strings: newlines MUST be \\n, quotes \\\", backslashes \\\\.\n"
-    "  • For long content, split across multiple tool calls (write_file once,\n"
-    "    then edit_file to append) rather than one huge fragile JSON string.\n"
-    "  • If the task needs a file output, you MUST end with a successful\n"
-    "    write_* call — do not summarize in chat only."
+    "  • write_file has a HARD LIMIT of 3000 chars per call. Plan for it:\n"
+    "      1) First write_file call = header + first section (≤2500 chars).\n"
+    "      2) Subsequent chunks via edit_file: set old_string=\"\" and\n"
+    "         new_string=<next chunk> to append. Repeat until done.\n"
+    "    Do NOT try to send the full document in one write — it will fail.\n"
+    "  • Emit ONE tool_use per assistant turn. Never repeat the same call.\n"
+    "  • If the task needs a file output, you MUST end with successful\n"
+    "    write_*/edit_file calls — do not summarize in chat only."
 )
 
 
-def assemble_prompt(base_system: str, extracted: Extracted) -> str:
-    blocks = []
-    if base_system and base_system.strip():
-        blocks.append(base_system.strip())
-
+def _facts_block(extracted: Extracted) -> str:
+    """Shared facts block used by both the system prompt and (as a prefix)
+    the user message. Returns empty string if nothing extractable."""
     facts = []
     if extracted.paths:
         facts.append("PATHS (use EXACTLY — preserve drive, directory, filename):")
@@ -140,11 +144,18 @@ def assemble_prompt(base_system: str, extracted: Extracted) -> str:
         facts.append(f"USER INTENT VERBS: {', '.join(extracted.verbs)}")
     if extracted.language == "vi":
         facts.append("USER LANGUAGE: Vietnamese — prefer Vietnamese in the final reply.")
+    if not facts:
+        return ""
+    return "=== EXTRACTED CONTEXT ===\n" + "\n".join(facts) + "\n=== END CONTEXT ==="
 
-    if facts:
-        blocks.append("=== EXTRACTED CONTEXT ===\n" + "\n".join(facts)
-                      + "\n=== END CONTEXT ===")
 
+def assemble_prompt(base_system: str, extracted: Extracted) -> str:
+    blocks = []
+    if base_system and base_system.strip():
+        blocks.append(base_system.strip())
+    fb = _facts_block(extracted)
+    if fb:
+        blocks.append(fb)
     blocks.append(_OUTPUT_CONTRACT)
     return "\n\n".join(blocks)
 
@@ -161,29 +172,53 @@ def _last_user_text(messages: list) -> str:
     return ""
 
 
+_FACTS_MARKER = "=== EXTRACTED CONTEXT ==="
+
+
 def prepare(messages: list, base_system: str) -> list:
-    """Return a new message list with an enriched system message.
+    """Return a new message list with an enriched system message AND the
+    extracted facts prefixed onto the latest user message.
+
+    Why both? Downstream routes (notably the orchestrator) strip existing
+    system messages before re-building their own. A system-only injection
+    would be discarded. Putting the facts into the user message too means
+    they survive any system-prompt surgery and reach the model.
 
     Behavior:
-      • If an existing `system` message is present, it is REPLACED with the
-        assembled prompt (base_system is used as the role instructions).
-      • Otherwise a new system message is prepended.
-      • User/assistant messages are passed through untouched.
+      • Existing `system` message is REPLACED with the assembled prompt.
+      • If none present, a new system message is prepended.
+      • The LATEST user message gets a facts-prefix (only if facts exist).
+        Idempotent: we skip if the message already starts with the marker,
+        so repeated calls don't stack prefixes.
     """
     if not messages:
         return messages
     raw = _last_user_text(messages)
     extracted = extract(normalize(raw))
-    system_content = assemble_prompt(base_system, extracted)
 
-    out = []
-    injected = False
-    for m in messages:
-        if m.get("role") == "system" and not injected:
-            out.append({"role": "system", "content": system_content})
-            injected = True
-        else:
-            out.append(m)
-    if not injected:
-        out.insert(0, {"role": "system", "content": system_content})
+    # Preserve any prior conversation summary carried in the incoming system
+    # messages — pipeline used to stomp it, losing long-session context.
+    summary = extract_summary(messages)
+    system_content = merge_summary(assemble_prompt(base_system, extracted), summary)
+    facts = _facts_block(extracted)
+
+    # Find index of latest user message so we can prefix facts onto it.
+    last_user_idx = -1
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].get("role") == "user":
+            last_user_idx = i
+            break
+
+    # Drop ALL existing system messages (summary + otherwise) — we just folded
+    # them into system_content. Then inject the merged system at the top.
+    out = [{"role": "system", "content": system_content}]
+    for i, m in enumerate(messages):
+        if m.get("role") == "system":
+            continue
+        if i == last_user_idx and facts:
+            orig = m.get("content", "")
+            if isinstance(orig, str) and _FACTS_MARKER not in orig:
+                out.append({"role": "user", "content": facts + "\n\n" + orig})
+                continue
+        out.append(m)
     return out

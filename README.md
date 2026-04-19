@@ -19,6 +19,10 @@ python -m venv venv && venv\Scripts\activate
 pip install chromadb pycryptodome pywin32 langchain-core langchain-text-splitters langchain-community tiktoken pypdf docx2txt unstructured requests discord.py
 # Linux/Mac: thay `pywin32` bằng `cryptography`
 
+# Activate git hooks (chặn commit nhầm API key / log / runtime_overrides.json).
+# Chạy 1 lần sau khi clone:
+git config core.hooksPath .githooks
+
 # Sửa config.py (CHAT_MODEL, EMBED_MODEL). API key nhập trong Web UI → Change Mode.
 
 # Build RAG & chạy
@@ -26,6 +30,12 @@ python data/indexer.py
 .\start_localhelpbot.bat
 # UI tự mở http://localhost:11435
 ```
+
+### Bảo mật API key
+
+- Key nhập qua Web UI (tab **Change Mode**) — mã hoá bằng DPAPI (Win) / Fernet (Linux/Mac) trước khi ghi xuống `runtime_overrides.json`.
+- File đó + `.secret_key` + `.env` + `*.log` đã có trong `.gitignore`. Hook ở `.githooks/pre-commit` chặn commit nhầm (file hoặc content match `sk-ant-`, `sk-proj-`, `sk-`, `AIza`, `enc:v1:`).
+- Không bao giờ paste key vào `config.py` hay bất kỳ file tracked nào — dùng Web UI hoặc env var (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`).
 
 Chi tiết setup + troubleshooting: [docs/ai/implementation/](docs/ai/implementation/README.md) và [docs/ai/testing/](docs/ai/testing/README.md).
 

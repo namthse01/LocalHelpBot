@@ -42,6 +42,23 @@ MAX_ERROR_STREAK = 5
 MAX_PARSE_RETRIES = 3  # malformed tool_use JSON
 MAX_WRITE_NUDGES = 3   # user asked to write a file but agent keeps skipping
 
+# Micro-compaction (port of claude-code's microCompact.ts).
+# When the conversation grows past MICRO_COMPACT_TURNS, older tool-result
+# feedback blocks whose content exceeds MICRO_COMPACT_MIN_CHARS are replaced
+# with a short placeholder. Keeps the model's working memory lean while
+# preserving the narrative thread (user/assistant messages untouched).
+MICRO_COMPACT_TURNS     = 6
+MICRO_COMPACT_MIN_CHARS = 1500
+MICRO_COMPACT_KEEP_TAIL = 2   # most recent tool-result turns kept verbatim
+MICRO_COMPACT_PLACEHOLDER = (
+    "[Old tool result content cleared for context window — "
+    "re-run the tool if you need the full output again.]"
+)
+# How many chars of the original body to keep as a one-line digest inside the
+# placeholder. Lets the model remember *what* was in the result (first match,
+# first error, first file line) so it doesn't re-issue the same tool call.
+MICRO_COMPACT_DIGEST_CHARS = 180
+
 # Signatures that strongly suggest the model TRIED to call a tool but emitted
 # malformed JSON (so our 3 parsers all silently missed it). Used to distinguish
 # "truly done" from "attempted-but-broken-syntax".
@@ -360,6 +377,96 @@ def _recovery_hint(tool_name: str, result: str) -> str:
     )
 
 
+_ARG_PRIORITY = ("path", "command", "url", "query", "pattern", "agent")
+
+
+def _brief_args(args: Dict[str, Any], limit: int = 160) -> str:
+    """Flatten args into a compact, attribute-safe one-liner for the tool_result
+    wrapper. Keeps identifying keys (path/url/cmd) so micro-compacted placeholders
+    still tell the model *which* target was queried — no re-issue needed."""
+    if not isinstance(args, dict) or not args:
+        return ""
+    pieces: List[str] = []
+    seen_keys = set()
+    for k in _ARG_PRIORITY:
+        if k in args:
+            seen_keys.add(k)
+            v = str(args[k])[:80].replace("\n", " ").replace('"', "'")
+            pieces.append(f"{k}={v}")
+    for k, v in args.items():
+        if k in seen_keys:
+            continue
+        s = str(v)[:40].replace("\n", " ").replace('"', "'")
+        pieces.append(f"{k}={s}")
+        if len(pieces) >= 4:
+            break
+    out = " ".join(pieces)
+    # Escape angle brackets to avoid breaking XML-ish parsers that look for
+    # `<tool_result`. Ampersand last so we don't double-encode.
+    out = out.replace("<", "‹").replace(">", "›")
+    return out[:limit]
+
+
+def _extract_digest(body: str, limit: int = MICRO_COMPACT_DIGEST_CHARS) -> str:
+    """One-line digest of a tool_result body — collapses whitespace, drops leading
+    error-signal noise when possible, truncates. Used when micro-compacting so
+    the placeholder still carries a hint of what the result contained."""
+    if not body:
+        return ""
+    text = re.sub(r"\s+", " ", body).strip()
+    return text[:limit] + ("…" if len(text) > limit else "")
+
+
+def _micro_compact(conversation: List[Dict[str, Any]]) -> int:
+    """Replace old, large tool_result feedback bodies with a placeholder +
+    one-line digest. Walks the conversation backwards. User messages that
+    contain a `<tool_result` block AND are older than the last
+    MICRO_COMPACT_KEEP_TAIL such messages get their body replaced — BUT we
+    keep the structural wrapper (name, args, is_error) AND a short digest of
+    the original body so the model still knows *what* was in the result and
+    which target it applied to.
+
+    Returns the number of messages compacted (for telemetry).
+    """
+    tool_feedback_indices: List[int] = []
+    for i, m in enumerate(conversation):
+        if m.get("role") != "user":
+            continue
+        body = m.get("content", "")
+        if isinstance(body, str) and "<tool_result" in body and len(body) > MICRO_COMPACT_MIN_CHARS:
+            tool_feedback_indices.append(i)
+    # Keep the most recent MICRO_COMPACT_KEEP_TAIL intact
+    to_compact = tool_feedback_indices[:-MICRO_COMPACT_KEEP_TAIL] if len(tool_feedback_indices) > MICRO_COMPACT_KEEP_TAIL else []
+    compacted = 0
+    for idx in to_compact:
+        # Already compacted? skip.
+        if MICRO_COMPACT_PLACEHOLDER in (conversation[idx].get("content", "") or ""):
+            continue
+        orig = conversation[idx]["content"]
+
+        def _replace(m: "re.Match") -> str:
+            open_tag = m.group(1)  # <tool_result name="X" args="..." is_error="...">
+            body     = m.group(2)
+            close_tag = m.group(3)
+            digest = _extract_digest(body)
+            digest_line = f"Digest: {digest}" if digest else ""
+            return (
+                f"{open_tag}\n"
+                f"{MICRO_COMPACT_PLACEHOLDER}"
+                f"{chr(10) + digest_line if digest_line else ''}\n"
+                f"{close_tag}"
+            )
+
+        compact_body = re.sub(
+            r'(<tool_result[^>]*>)([\s\S]*?)(</tool_result>)',
+            _replace,
+            orig,
+        )
+        conversation[idx] = {"role": "user", "content": compact_body}
+        compacted += 1
+    return compacted
+
+
 def _format_tool_results(results: List[Dict[str, Any]], all_errors: bool) -> str:
     """Pack 1+ tool results into a single user-turn feedback message."""
     lines = []
@@ -369,7 +476,12 @@ def _format_tool_results(results: List[Dict[str, Any]], all_errors: bool) -> str
             hint = _suggest_alternative(r["name"], r["output"])
             if hint:
                 body = f"{body}\n\n{hint}"
-        lines.append(f"<tool_result name=\"{r['name']}\" is_error=\"{str(r['is_error']).lower()}\">\n{body}\n</tool_result>")
+        arg_str = _brief_args(r.get("args") or {})
+        args_attr = f' args="{arg_str}"' if arg_str else ""
+        lines.append(
+            f'<tool_result name="{r["name"]}"{args_attr} '
+            f'is_error="{str(r["is_error"]).lower()}">\n{body}\n</tool_result>'
+        )
     footer = (
         "\n\nAll tools errored — analyze each and emit a corrected tool_use, "
         "or write your final answer if you're stuck."
@@ -410,6 +522,17 @@ def run_agent(
     _parse_retry_count = 0
 
     for turn in range(max_turns):
+        # Micro-compact before each LLM call once the loop gets long. Keeps
+        # the tail (recent tool outputs) intact — model still sees what it
+        # just did — but strips oldest verbose bodies to a placeholder.
+        if turn >= MICRO_COMPACT_TURNS:
+            n = _micro_compact(conversation)
+            if n:
+                logger.info(f"[agent] micro-compacted {n} old tool-result turns")
+                _emit(stream_cb, {
+                    "type": "status",
+                    "text": f"micro-compacted {n} old tool outputs",
+                })
         _emit(stream_cb, {"type": "status", "text": f"Turn {turn + 1}: thinking…"})
         t_turn = _time.perf_counter()
         response = smart_provider.chat(conversation)
@@ -418,6 +541,25 @@ def run_agent(
         content = response.content or ""
 
         calls = _parse_tool_uses(content)
+        # Dedupe retry-storms: when a weak local model panics and re-emits the
+        # same tool call 3-5 times in one assistant message (usually because
+        # its prior JSON was truncated), keep only the FIRST occurrence per
+        # (tool_name, path-or-command). This prevents duplicate writes, wasted
+        # permission prompts, and cascading errors.
+        if len(calls) > 1:
+            seen = set()
+            deduped = []
+            for c in calls:
+                inp = c.get("input", {}) or {}
+                key_val = inp.get("path") or inp.get("command") or inp.get("url") or ""
+                key = (c.get("name", ""), str(key_val)[:200])
+                if key in seen:
+                    continue
+                seen.add(key)
+                deduped.append(c)
+            if len(deduped) < len(calls):
+                logger.info(f"[agent] deduped tool calls: {len(calls)} → {len(deduped)}")
+            calls = deduped
         narration = _strip_tool_uses(content) if calls else content
 
         if narration:
@@ -497,7 +639,7 @@ def run_agent(
                 "ok": not is_err,
                 "preview": (out or "")[:800],
             })
-            results.append({"name": name, "output": out, "is_error": is_err})
+            results.append({"name": name, "args": args, "output": out, "is_error": is_err})
 
         # Error-streak safety valve
         if all_errors:

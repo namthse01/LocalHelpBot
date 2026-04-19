@@ -15,12 +15,16 @@ Bundled inside the exe:
     - core/*.py, config.py, data/*.py
     - HelpBotUI/            (web UI)
     - docs/                 (RAG docs — optional, can be large)
-    - runtime_overrides.json (if present at build time)
 
-Not bundled (the exe reads them from alongside itself at runtime):
+NEVER bundled — the exe reads/writes them from alongside itself at runtime:
     - cad_db/               (vector store — writable)
-    - runtime_overrides.json (user edits via UI)
+    - runtime_overrides.json (user-edited, contains ENCRYPTED api_key)
+    - .secret_key           (Fernet key on non-Windows)
     - proxy.log / gateway.log
+
+The DATAS tuple below is the source of truth for what ships. If you add new
+bundled assets, make sure they NEVER contain secrets — this exe may be
+shared. runtime_overrides.json and .secret_key are deliberately omitted.
 """
 
 from __future__ import annotations

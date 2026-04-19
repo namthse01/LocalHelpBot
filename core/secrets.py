@@ -3,14 +3,42 @@ Encrypt/decrypt secrets (API keys) bound to the current Windows user account
 via DPAPI. Falls back to a machine-local keyfile + Fernet on non-Windows.
 
 Ciphertext format: "enc:v1:<base64>"
+
+Also exposes `redact_secrets(text)` — a best-effort regex scrubber for log lines
+and error bodies. Used by providers / proxy so a leaked exception message with
+an embedded key never lands in proxy.log or gateway.log.
 """
 import base64
 import os
+import re
 import sys
 from pathlib import Path
 
 MARKER = "enc:v1:"
 _KEYFILE = Path(__file__).parent.parent / ".secret_key"
+
+# Patterns below cover the main vendor prefixes we ship with (Anthropic,
+# OpenAI, Google/Gemini, generic Bearer headers, URL `?key=` / `&key=` params,
+# and our own encrypted blob prefix). Each replaces the secret body with
+# `[REDACTED]` but keeps the surrounding label so the log still makes sense.
+_SECRET_PATTERNS: list[tuple[re.Pattern, str]] = [
+    # Anthropic: sk-ant-...  (typically 95+ chars)
+    (re.compile(r"sk-ant-[A-Za-z0-9_\-]{10,}"), "sk-ant-[REDACTED]"),
+    # OpenAI project / legacy keys: sk-proj-..., sk-...
+    (re.compile(r"sk-proj-[A-Za-z0-9_\-]{10,}"), "sk-proj-[REDACTED]"),
+    (re.compile(r"\bsk-[A-Za-z0-9]{20,}"),        "sk-[REDACTED]"),
+    # Google / Gemini / Gemma AI Studio keys: AIza + 35 chars
+    (re.compile(r"\bAIza[A-Za-z0-9_\-]{20,}"),    "AIza[REDACTED]"),
+    # URL query param `key=...` (Google's legacy URL-auth style)
+    (re.compile(r"([?&]key=)[A-Za-z0-9_\-]{10,}"), r"\1[REDACTED]"),
+    # Generic HTTP auth headers — both forms we emit
+    (re.compile(r"(Authorization:\s*Bearer\s+)\S+", re.IGNORECASE), r"\1[REDACTED]"),
+    (re.compile(r"(x-api-key:\s*)\S+",              re.IGNORECASE), r"\1[REDACTED]"),
+    (re.compile(r"(x-goog-api-key:\s*)\S+",         re.IGNORECASE), r"\1[REDACTED]"),
+    # Our own ciphertext prefix — harmless to a local attacker, but still a
+    # secret-shaped string that shouldn't be shown to users / in public logs.
+    (re.compile(r"enc:v1:[A-Za-z0-9+/=]{20,}"),   "enc:v1:[REDACTED]"),
+]
 
 
 def _is_encrypted(value: str) -> bool:
@@ -72,3 +100,19 @@ def mask_secret(value: str) -> str:
     if not value:
         return ""
     return "••••••••••••••••"
+
+
+def redact_secrets(text: str) -> str:
+    """Best-effort scrub of API keys from a free-form string.
+
+    Use before emitting anything to a log/error response that may carry
+    request context (headers, URLs, tracebacks). Does NOT guarantee 100%
+    coverage — treat as defense-in-depth, not a silver bullet. Unknown key
+    formats (custom gateways etc.) will pass through.
+    """
+    if not text:
+        return text
+    out = text
+    for pat, repl in _SECRET_PATTERNS:
+        out = pat.sub(repl, out)
+    return out

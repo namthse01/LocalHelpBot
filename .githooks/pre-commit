@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# LocalHelpBot pre-commit guard.
+#
+# Blocks two classes of accidental commits:
+#   (a) files that should NEVER be tracked (runtime_overrides.json, .secret_key,
+#       .env, *.log, launcher.py, *.spec, build/, dist/)
+#   (b) any staged content matching a known API-key pattern
+#
+# Activate once per clone:
+#     git config core.hooksPath .githooks
+#
+# To bypass in a genuine emergency: `git commit --no-verify`. Don't.
+
+set -e
+
+RED='\033[0;31m'; YELLOW='\033[1;33m'; NC='\033[0m'
+staged="$(git diff --cached --name-only --diff-filter=ACM)"
+[ -z "$staged" ] && exit 0
+
+block=0
+
+# ── (a) forbidden paths ───────────────────────────────────────────
+forbidden_re='^(runtime_overrides\.json|\.secret_key|\.env|launcher\.py)$|^\.env\.|(^|/)build/|(^|/)dist/|\.log$|\.spec$'
+while IFS= read -r f; do
+    if echo "$f" | grep -Eq "$forbidden_re"; then
+        printf "${RED}[pre-commit] BLOCKED — forbidden path:${NC} %s\n" "$f"
+        block=1
+    fi
+done <<< "$staged"
+
+# ── (b) content patterns ──────────────────────────────────────────
+# Patterns must match what's in core/secrets.py::_SECRET_PATTERNS so the
+# scrubber and the blocker stay aligned. Only scan text files.
+patterns=(
+    'sk-ant-[A-Za-z0-9_\-]{10,}'
+    'sk-proj-[A-Za-z0-9_\-]{10,}'
+    '\bsk-[A-Za-z0-9]{20,}'
+    '\bAIza[A-Za-z0-9_\-]{20,}'
+    'enc:v1:[A-Za-z0-9+/=]{20,}'
+)
+
+while IFS= read -r f; do
+    # Skip known-safe files: the hook itself, the scrubber (contains literal
+    # pattern strings), docs that show examples in backticks.
+    case "$f" in
+        .githooks/pre-commit|core/secrets.py) continue ;;
+    esac
+    # Skip binary files
+    if ! git diff --cached --numstat -- "$f" | awk '{print $1}' | grep -q '^-$'; then
+        for p in "${patterns[@]}"; do
+            if git diff --cached -U0 -- "$f" | grep -E "^\+" | grep -Eq "$p"; then
+                printf "${RED}[pre-commit] BLOCKED — secret-shaped string in:${NC} %s\n" "$f"
+                printf "${YELLOW}  pattern: %s${NC}\n" "$p"
+                block=1
+                break
+            fi
+        done
+    fi
+done <<< "$staged"
+
+if [ "$block" -ne 0 ]; then
+    printf "\n${RED}Commit aborted.${NC} Remove the secret / forbidden file, then re-stage.\n"
+    printf "If you must bypass (rare!), use --no-verify and explain why in the commit message.\n"
+    exit 1
+fi
+exit 0

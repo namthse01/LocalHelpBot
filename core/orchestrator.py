@@ -19,6 +19,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from config import AGENT_PROFILES
 from core.context import build_system_context
+from core.memory import extract_summary, merge_summary
 from core.providers import smart_provider
 from core.tool_schema import Tool, ToolRegistry, build_default_registry
 
@@ -70,15 +71,27 @@ class AgentOrchestrator:
             # Back-compat alias
             sub_registry.register(self._make_task_tool(stream_cb, parent_id=agent_name, alias="delegate"))
 
-        # Build system prompt: base + runtime + env + tool catalog + memory + tool-use format.
+        # Build system prompt: base + runtime + env + tool catalog + memory +
+        # tool-use format + any carried-forward conversation summary.
         base = profile["system_prompt"] + "\n\n" + self._runtime_block(agent_name)
         system_content = build_system_context(base, list(sub_registry))
+        carried_summary = extract_summary(conversation or [])
+        system_content = merge_summary(system_content, carried_summary)
 
         messages: List[Dict[str, str]] = [{"role": "system", "content": system_content}]
+
         if conversation:
-            # Drop any existing system messages from history to avoid drift.
-            messages.extend([m for m in conversation if m.get("role") != "system"])
-        messages.append({"role": "user", "content": prompt})
+            # Drop any existing system messages (summary already folded in).
+            non_system = [m for m in conversation if m.get("role") != "system"]
+            messages.extend(non_system)
+            # Avoid duplicating the user prompt: if the last message in the
+            # carried history IS the user's latest turn, we don't append it
+            # again. Sub-agent (task-tool) calls pass conversation=None, so
+            # the else-branch still runs for them.
+            if not non_system or non_system[-1].get("role") != "user":
+                messages.append({"role": "user", "content": prompt})
+        else:
+            messages.append({"role": "user", "content": prompt})
 
         session_id = str(uuid.uuid4())[:8]
         self.active_sessions[session_id] = {"agent": agent_name, "parent": parent_id}
@@ -123,13 +136,25 @@ class AgentOrchestrator:
             # Return just the final text to the caller — isolating sub-context.
             return f"[sub-agent {target} finished]\n{result}"
 
+        # Build per-specialist routing criteria so the caller can pick the right
+        # one. Falls back to just the name if a profile has no description.
+        spec_lines = []
+        for name, prof in AGENT_PROFILES.items():
+            if name == parent_id:  # hide the caller from its own list
+                continue
+            desc = (prof.get("description") or "").strip()
+            spec_lines.append(f"  • {name}: {desc or '(no description)'}")
+        spec_block = "\n".join(spec_lines) if spec_lines else "  (no specialists registered)"
+
         return Tool(
             name=alias,
             description=(
-                "Spawn a sub-agent specialist with an isolated conversation. "
-                "Use for big explorations, parallel research, or whenever a task "
-                "benefits from a fresh context window. "
-                f"Valid agents: {', '.join(AGENT_PROFILES.keys())}."
+                "Spawn a sub-agent specialist with an isolated conversation.\n"
+                "Use when the task needs a fresh context window, a specialist "
+                "skillset, or can run in parallel with your own work.\n\n"
+                "Available specialists:\n"
+                f"{spec_block}\n\n"
+                "Pick the ONE that best matches — do not delegate trivial work."
             ),
             input_schema={
                 "type": "object",

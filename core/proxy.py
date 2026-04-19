@@ -20,6 +20,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import OLLAMA_BASE, CHAT_MODEL, LARGE_MODEL, PROXY_PORT, AGENT_PROFILES
 from core.orchestrator import AgentOrchestrator
+from core import pipeline  # input preprocessing: normalize + extract + assemble
+from core import memory as mem  # session-memory helpers (summary preservation, budget)
 
 def _get_rag():
     from core.query import query_rag
@@ -55,6 +57,58 @@ CODE_SYSTEM = "You are an autonomous coding agent..."
 BROWSER_SYSTEM = "You are browser-agent, a local browser data reader..."
 WEB_SYSTEM = "You are web-creep, an autonomous web research agent..."
 
+def _ensure_budget(messages: list) -> list:
+    """Server-side compaction safety net.
+
+    If the incoming message list is over the soft token budget, fold the
+    oldest turns into a summary system message and keep the most recent
+    turns verbatim. Runs BEFORE pipeline/orchestrator rebuild the system
+    prompt (our memory helpers then carry the summary forward).
+
+    No-op if already under budget or if summarization fails — in both cases
+    we return the original list so downstream routing still works.
+    """
+    try:
+        if not messages:
+            return messages
+        tokens = mem.estimate_tokens(messages)
+        if tokens <= mem.DEFAULT_MAX_TOKENS:
+            return messages
+        from core.providers import smart_provider as _sp
+        system, to_summarize, keep = mem.split_for_compaction(
+            messages, keep_recent_turns=mem.DEFAULT_KEEP_RECENT_TURNS
+        )
+        if not to_summarize:
+            return messages
+        # Include any prior summary from existing system messages so the
+        # summarizer can extend-not-replace.
+        prior = mem.extract_summary(system)
+        prompt_msgs = mem.build_summarizer_messages(to_summarize)
+        if prior:
+            prompt_msgs[-1]["content"] = (
+                f"Prior summary (extend this, do not discard facts):\n{prior}\n\n"
+                + prompt_msgs[-1]["content"]
+            )
+        print(f"[compact] server-side safety-net firing — "
+              f"tokens~{tokens} > {mem.DEFAULT_MAX_TOKENS}, "
+              f"summarizing {len(to_summarize)} old turns, keeping {len(keep)}", flush=True)
+        resp = _sp.chat(prompt_msgs, options={"temperature": 0.1, "num_predict": 1024})
+        summary = mem.wrap_summary_output(resp.content or "")
+        if not summary:
+            return messages
+        # Rebuild: non-summary system msgs, then summary system, then kept turns
+        non_summary_system = [m for m in system
+                              if not mem._looks_like_summary(mem._content_text(m))]
+        summary_msg = {
+            "role": "system",
+            "content": f"{mem.SUMMARY_MARKER}\n{summary}\n{mem.SUMMARY_END}",
+        }
+        return non_summary_system + [summary_msg] + keep
+    except Exception as e:
+        print(f"[compact] safety-net failed (non-fatal): {e}", flush=True)
+        return messages
+
+
 def _rag_context(query: str) -> str:
     try:
         query_rag = _get_rag()
@@ -75,21 +129,41 @@ def _rag_context(query: str) -> str:
 
 def _inject_rag(messages: list, user_q: str) -> list:
     ctx = _rag_context(user_q)
-    new_sys = f"{CAD_SYSTEM}\n\n=== RETRIEVED CONTEXT ===\n{ctx}\n=== END CONTEXT ==="
-    out, has_sys = [], False
+    # Preserve any carried conversation summary so long CAD chats don't lose
+    # context when we overwrite the system prompt with the RAG block.
+    carried = mem.extract_summary(messages)
+    base = f"{CAD_SYSTEM}\n\n=== RETRIEVED CONTEXT ===\n{ctx}\n=== END CONTEXT ==="
+    new_sys = mem.merge_summary(base, carried)
+    # Drop ALL existing system messages (we folded the summary into new_sys).
+    out = [{"role": "system", "content": new_sys}]
     for msg in messages:
         if msg.get("role") == "system":
-            out.append({"role": "system", "content": new_sys})
-            has_sys = True
-        else:
-            out.append(msg)
-    if not has_sys: out.insert(0, {"role": "system", "content": new_sys})
+            continue
+        out.append(msg)
     return out
 
 def _inject_system(messages: list, system: str) -> list:
-    has_sys = any(m.get("role") == "system" for m in messages)
-    if has_sys: return messages
-    return [{"role": "system", "content": system}] + list(messages)
+    # Always preserve any carried summary, even when the client already sent
+    # a system message. We merge summary → new system and drop summary-only
+    # system messages to avoid duplicating the block.
+    carried = mem.extract_summary(messages)
+    non_summary_system = [
+        m for m in messages
+        if m.get("role") == "system" and not mem._looks_like_summary(mem._content_text(m))
+    ]
+    if non_summary_system and not carried:
+        # Nothing to merge — keep the caller's system as-is.
+        return messages
+    merged = mem.merge_summary(system, carried)
+    out = [{"role": "system", "content": merged}]
+    for m in messages:
+        if m.get("role") == "system":
+            # If it's a non-summary system the caller sent, fold it in too.
+            if not mem._looks_like_summary(mem._content_text(m)):
+                out[0]["content"] = out[0]["content"] + "\n\n" + mem._content_text(m)
+            continue
+        out.append(m)
+    return out
 
 def _last_user_msg(messages: list) -> str:
     for msg in reversed(messages):
@@ -184,7 +258,29 @@ def _record_stat(prompt: str, total_ms: int, active: str, llm_timing: str):
         "llm": llm_timing,
     })
     del _RECENT_STATS[20:]
-HEARTBEAT_TIMEOUT = 45  # seconds without heartbeat → shutdown (safety margin for slow LLM turns)
+# Shutdown only after prolonged UI silence. 5 minutes gives slow-tab
+# browsers (Chrome throttles background setInterval to ~1/min) plenty of
+# room, and any in-flight request bumps the deadline anyway.
+HEARTBEAT_TIMEOUT = 300
+_inflight_requests = 0  # active agentic requests — watchdog won't shut down while > 0
+_inflight_lock = threading.Lock()
+
+def _mark_activity():
+    """Any UI-originating request counts as a liveness signal."""
+    import time
+    global _last_heartbeat, _heartbeat_active
+    _last_heartbeat = time.time()
+    _heartbeat_active = True
+
+def _inflight_inc():
+    global _inflight_requests
+    with _inflight_lock:
+        _inflight_requests += 1
+
+def _inflight_dec():
+    global _inflight_requests
+    with _inflight_lock:
+        _inflight_requests = max(0, _inflight_requests - 1)
 
 def _shutdown_all():
     _stop_discord()
@@ -194,13 +290,23 @@ def _shutdown_all():
     sys.exit(0)
 
 def _heartbeat_watchdog():
-    """Background thread: shutdown if no heartbeat received for HEARTBEAT_TIMEOUT seconds."""
+    """Shutdown only if UI has been idle AND no agent request is in flight.
+    An in-flight request is strong evidence the user is still actively using
+    the bot — never kill a working session."""
     import time
     global _last_heartbeat, _heartbeat_active
     while True:
-        time.sleep(5)
-        if _heartbeat_active and (time.time() - _last_heartbeat) > HEARTBEAT_TIMEOUT:
-            print(f"[heartbeat] No UI heartbeat for {HEARTBEAT_TIMEOUT}s — shutting down.", flush=True)
+        time.sleep(10)
+        if not _heartbeat_active:
+            continue
+        if _inflight_requests > 0:
+            # User is actively waiting on us — extend deadline, don't kill.
+            _last_heartbeat = time.time()
+            continue
+        idle = time.time() - _last_heartbeat
+        if idle > HEARTBEAT_TIMEOUT:
+            print(f"[heartbeat] UI idle for {int(idle)}s (>{HEARTBEAT_TIMEOUT}s) "
+                  f"and no in-flight work — shutting down.", flush=True)
             _shutdown_all()
             break
 
@@ -317,6 +423,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
         path    = self.path
         is_chat = path in ("/api/chat", "/v1/chat/completions")
 
+        # Any POST from the UI counts as liveness — heartbeat alone isn't
+        # reliable when the tab is backgrounded or when a streaming chat
+        # response is hogging the connection.
+        _mark_activity()
+
         try:
             payload = json.loads(raw)
         except Exception:
@@ -394,34 +505,39 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
         if path == "/api/memory/summarize":
             # Tier-1 in-session memory compression.
-            # Client posts the oldest slice of chat history; we return a short
-            # summary that the client substitutes back in as a single system
-            # message. Keeps long chats coherent without dropping context.
+            # Client posts the oldest slice of chat history; we return a
+            # structured 8-section summary (Primary Request / Decisions /
+            # Files / Tools / Errors / Feedback / Pending / Current State —
+            # port of claude-code's compact prompt scaled for local models).
+            # The client wraps the result with SUMMARY_MARKER so the server
+            # recognises and preserves it across later system-prompt rewrites.
             try:
                 from core.providers import smart_provider
                 msgs = payload.get("messages", []) or []
-                convo = "\n".join(
-                    f"{m.get('role','user')}: {str(m.get('content',''))[:2000]}"
-                    for m in msgs if m.get("content")
-                )
+                prior_summary = (payload.get("prior_summary") or "").strip()
                 summary = ""
-                if convo.strip():
-                    prompt = [
-                        {"role": "system", "content": (
-                            "You compress chat history. Output a concise 3rd-person summary "
-                            "(<=200 words) capturing: user goals, decisions made, key facts/"
-                            "results (numbers, names, file paths), and open threads. "
-                            "No preamble — just the summary."
-                        )},
-                        {"role": "user", "content": f"Summarize this conversation:\n\n{convo}"},
-                    ]
-                    resp = smart_provider.chat(prompt)
-                    summary = (resp.content or "").strip()
+                if msgs:
+                    prompt_msgs = mem.build_summarizer_messages(msgs)
+                    if prior_summary:
+                        prompt_msgs[-1]["content"] = (
+                            f"Prior summary (extend this, do not discard facts):\n"
+                            f"{prior_summary}\n\n" + prompt_msgs[-1]["content"]
+                        )
+                    resp = smart_provider.chat(
+                        prompt_msgs, options={"temperature": 0.1, "num_predict": 1024}
+                    )
+                    summary = mem.wrap_summary_output(resp.content or "")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
-                self.wfile.write(json.dumps({"summary": summary}).encode())
+                # Include marker so the client can round-trip it into a tagged
+                # system message without knowing our constants.
+                self.wfile.write(json.dumps({
+                    "summary": summary,
+                    "marker": mem.SUMMARY_MARKER,
+                    "marker_end": mem.SUMMARY_END,
+                }).encode())
             except Exception as e:
                 self.send_response(500)
                 self.send_header("Content-Type", "application/json")
@@ -460,11 +576,29 @@ class ProxyHandler(BaseHTTPRequestHandler):
             print(f"[discord] {msg}", flush=True)
             return
 
-        if path == "/api/heartbeat":
+        if path == "/api/ui-closing":
+            # UI beacon on tab close / navigation away. We DON'T shutdown
+            # immediately (user might be refreshing) — instead we rewind the
+            # heartbeat clock so the watchdog fires ~15s from now unless a
+            # new heartbeat arrives (reload sends one instantly). Also refuse
+            # to wind down if there's still work in flight.
             import time
-            global _last_heartbeat, _heartbeat_active
-            _last_heartbeat = time.time()
-            _heartbeat_active = True
+            global _last_heartbeat
+            if _inflight_requests <= 0:
+                _last_heartbeat = time.time() - (HEARTBEAT_TIMEOUT - 15)
+                print("[ui-closing] UI signaled close — 15s grace window started.", flush=True)
+            else:
+                print("[ui-closing] UI closing but work in flight — ignored.", flush=True)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(b'{"status":"ok"}')
+            return
+
+        if path == "/api/heartbeat":
+            # _mark_activity() already fired above; this endpoint is now a
+            # simple 200 so the UI ping contract stays stable.
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")
@@ -484,14 +618,17 @@ class ProxyHandler(BaseHTTPRequestHandler):
         model = payload.get("model", "")
 
         if model == AUTO_MODEL and is_chat:
-            messages = payload.get("messages", [])
+            messages = _ensure_budget(payload.get("messages", []))
+            # Enrich with extracted facts (paths, filenames, verbs) + output
+            # contract. Orchestrator owns the role prompt, so base_system="".
+            messages = pipeline.prepare(messages, base_system="")
             user_q = _last_user_msg(messages)
             print(f"[orchestrator] handling request: {user_q!r}", flush=True)
             self._run_agent_response(messages, {}, orchestrator_mode=True, user_q=user_q)
             return
 
         if model == CAD_MODEL and is_chat:
-            messages = payload.get("messages", [])
+            messages = _ensure_budget(payload.get("messages", []))
             user_q   = _last_user_msg(messages)
             payload["messages"] = _inject_rag(messages, user_q)
             payload["model"]    = REAL_MODEL
@@ -500,7 +637,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
             return
 
         if model == UI_MODEL and is_chat:
-            payload["messages"] = _inject_system(payload.get("messages", []), UI_SYSTEM)
+            messages = _ensure_budget(payload.get("messages", []))
+            payload["messages"] = _inject_system(messages, UI_SYSTEM)
             payload["model"]    = REAL_MODEL
             raw = json.dumps(payload).encode()
             self._forward_and_reply(path, raw)
@@ -509,23 +647,30 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if model == CODE_MODEL and is_chat:
             FILE_TOOLS, WEB_TOOLS = _get_tools()
             all_tools = {**FILE_TOOLS, **WEB_TOOLS}
-            messages = _inject_system(payload.get("messages", []), CODE_SYSTEM)
+            messages = _ensure_budget(payload.get("messages", []))
+            messages = pipeline.prepare(messages, CODE_SYSTEM)
             self._run_agent_response(messages, all_tools)
             return
 
         if model == WEB_MODEL and is_chat:
             _, WEB_TOOLS = _get_tools()
-            messages = _inject_system(payload.get("messages", []), WEB_SYSTEM)
+            messages = _ensure_budget(payload.get("messages", []))
+            messages = pipeline.prepare(messages, WEB_SYSTEM)
             self._run_agent_response(messages, WEB_TOOLS)
             return
 
         if model == BROWSER_MODEL and is_chat:
             BROWSER_TOOLS = _get_browser_tools()
-            messages = _inject_system(payload.get("messages", []), BROWSER_SYSTEM)
+            messages = _ensure_budget(payload.get("messages", []))
+            messages = pipeline.prepare(messages, BROWSER_SYSTEM)
             self._run_agent_response(messages, BROWSER_TOOLS)
             return
 
         if model == DEEP_MODEL and is_chat:
+            # Deep model gets its own compaction too — it's the most likely
+            # to have a long context buildup since users pick it for complex
+            # multi-turn discussions.
+            payload["messages"] = _ensure_budget(payload.get("messages", []))
             payload["model"] = LARGE_MODEL
             raw = json.dumps(payload).encode()
             self._forward_and_reply(path, raw)
@@ -604,6 +749,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         wfile = self.wfile
         emit = self._event_emitter(wfile)
         t0 = _t.perf_counter()
+        _inflight_inc()
         try:
             if orchestrator_mode:
                 final = orchestrator.handle_request(user_q, conversation=messages, stream_cb=emit)
@@ -612,6 +758,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 final = run_agent(messages, tools, stream_cb=emit)
         except Exception as e:
             final = f"ERROR in agent loop: {e}"
+        finally:
+            _inflight_dec()
+            _mark_activity()  # post-run bump so the next idle window starts fresh
         total_ms = int((_t.perf_counter() - t0) * 1000)
         try:
             from core.providers import smart_provider as _sp
@@ -649,6 +798,7 @@ def main():
     print(f"  browser-agent -> local Chrome/Edge cookies & storage reader", flush=True)
     print(f"  deep-agent    -> deep reasoning [{LARGE_MODEL}]", flush=True)
     print(f"  auto-agent    -> Smart Orchestrator (delegates to sub-agents)", flush=True)
+    print(f"  [pipeline]    input preprocessing ACTIVE (normalize + extract + assemble)", flush=True)
     print(f"  [auto-shutdown] Proxy will stop when UI tab is closed.", flush=True)
     threading.Thread(target=_heartbeat_watchdog, daemon=True).start()
     server.serve_forever()

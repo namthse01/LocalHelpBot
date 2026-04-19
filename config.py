@@ -79,6 +79,11 @@ ALLOWED_CHANNELS = DISCORD_SETTINGS["guilds"].get(DISCORD_SERVER_ID, {}).get("al
 # Define different specialists with their own system prompts and toolsets
 AGENT_PROFILES = {
     "main": {
+        "description": (
+            "General task executor & router. Owns the user conversation, plans, "
+            "calls tools end-to-end, delegates to other specialists when needed. "
+            "Default choice — only delegate if the task obviously fits a specialist."
+        ),
         "system_prompt": (
             "You are LocalHelpBot's main agent — an autonomous task executor. "
             "You receive TASKS and finish them END-TO-END: decompose, explore, act, verify, report. "
@@ -99,6 +104,12 @@ AGENT_PROFILES = {
             "     write_file / write_pdf / write_docx depending on the requested extension.\n"
             "  4. VERIFY — re-read the written file or run_command to confirm it landed.\n"
             "  5. REPORT — final answer with NO tool_use tags, mentioning the output path(s).\n\n"
+            "WHEN A TOOL FAILS — revise the plan before retrying:\n"
+            "  • Don't re-issue the same call with the same args hoping it works.\n"
+            "  • Read the <tool_result is_error=\"true\"> body + hint carefully.\n"
+            "  • Fix the root cause (wrong path? missing dep? stale old_string?) or\n"
+            "    switch to a different tool. State the revised step in 1 line before\n"
+            "    emitting the next tool_use.\n\n"
             "FILE-TYPE ROUTING:\n"
             "  • .pdf → read_pdf / write_pdf   • .docx → read_docx / write_docx\n"
             "  • .py/.cs/.js/.ts/.md/.txt/.json/.yml → read_file / write_file / edit_file\n"
@@ -128,16 +139,30 @@ AGENT_PROFILES = {
         ]
     },
     "researcher": {
+        "description": (
+            "Deep research specialist — multi-source synthesis. Delegate when the "
+            "task needs reading/comparing 3+ web sources or RAG docs and citing them. "
+            "NOT for single-URL lookups (main handles those)."
+        ),
         "system_prompt": "You are a Deep Research Specialist. Use RAG tools to find exhaustive information. Be thorough and cite sources.",
         "model": "glm-4.7-flash:latest",
         "tools": ["read_file", "list_dir", "search_web"]
     },
     "coder": {
+        "description": (
+            "Code analysis specialist — read-only code comprehension. Delegate for "
+            "bug-hunting across many files, pattern/convention audits, explaining "
+            "unfamiliar code. NOT for edits (main does edits itself)."
+        ),
         "system_prompt": "You are a Code Analysis Specialist. Focus on implementation details, patterns, and bug hunting.",
         "model": "qwen3.5:latest",
         "tools": ["read_file", "list_dir", "search_web"]
     },
     "summarizer": {
+        "description": (
+            "Terse summary generator for Discord — takes long content, returns "
+            "short bullets. Delegate for final output compression only."
+        ),
         "system_prompt": "You are a Summary Specialist. Take complex information and turn it into a concise, bulleted summary for Discord.",
         "model": "qwen3.5:latest",
         "tools": []

@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import ast; [ast.parse\\(open\\(f, encoding='utf-8'\\).read\\(\\)\\) for f in \\('core/memory.py','core/agent.py','core/orchestrator.py','config.py'\\)]; print\\('OK'\\)\")",
+      "Bash(PYTHONIOENCODING=utf-8 python -c \"from config import AGENT_PROFILES; p=AGENT_PROFILES['main']['system_prompt']; assert 'WHEN A TOOL FAILS' in p; assert 'revise the plan' in p; print\\('main prompt revise-section: OK  \\(length='+str\\(len\\(p\\)\\)+' chars\\)'\\)\")",
+      "Bash(cat)",
+      "Bash(cp /tmp/fake_leak.py fake_leak_TESTONLY.py)",
+      "Bash(git add *)",
+      "Bash(bash .githooks/pre-commit)",
+      "Bash(git reset *)",
+      "Bash(echo \"log content\")",
+      "Bash(rm -f debug.log)",
+      "Bash(PYTHONIOENCODING=utf-8 python -)"
+    ]
+  }
+}

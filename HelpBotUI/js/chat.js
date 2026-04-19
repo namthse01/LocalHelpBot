@@ -8,6 +8,10 @@
 //
 //   MEMORY_MAX_MESSAGES : hard cap on turns resent (sliding window)
 //   MEMORY_MAX_CHARS    : soft cap on total payload chars (cheap token proxy)
+//
+// Summary system messages are wrapped with SUMMARY_MARKER so the server
+// (core/memory.py) recognises and preserves them across pipeline/
+// orchestrator rewrites that would otherwise drop the system prompt.
 // ─────────────────────────────────────────────────────────────────
 const MEMORY_MAX_MESSAGES      = 30;
 const MEMORY_MAX_CHARS         = 24000;
@@ -17,11 +21,31 @@ const MEMORY_MAX_CHARS         = 24000;
 const MEMORY_COMPRESS_TRIGGER  = 24;  // turns before we compress
 const MEMORY_KEEP_RECENT       = 12;  // most recent turns always kept verbatim
 
+const SUMMARY_MARKER     = '=== CONVERSATION SUMMARY ===';
+const SUMMARY_MARKER_END = '=== END SUMMARY ===';
+
 window.chatHistory = window.chatHistory || [];
 
 function pushHistory(role, content) {
     if (!content) return;
     window.chatHistory.push({ role, content, ts: Date.now() });
+}
+
+function _extractPriorSummary() {
+    // Find existing summary in history (wrapped or legacy prefix).
+    for (const m of window.chatHistory) {
+        if (m.role !== 'system') continue;
+        const c = m.content || '';
+        if (c.includes(SUMMARY_MARKER)) {
+            const start = c.indexOf(SUMMARY_MARKER) + SUMMARY_MARKER.length;
+            const end = c.indexOf(SUMMARY_MARKER_END, start);
+            return (end >= 0 ? c.slice(start, end) : c.slice(start)).trim();
+        }
+        if (c.startsWith('Prior conversation summary')) {
+            return c.replace(/^Prior conversation summary[^:]*:\s*/i, '').trim();
+        }
+    }
+    return '';
 }
 
 async function maybeCompressHistory() {
@@ -32,42 +56,66 @@ async function maybeCompressHistory() {
     const cut = window.chatHistory.length - MEMORY_KEEP_RECENT;
     const toSummarize = window.chatHistory.slice(0, cut);
     const keep        = window.chatHistory.slice(cut);
-    // Don't re-summarize an existing summary — just extend it.
-    const priorSummary = (toSummarize[0] && toSummarize[0].role === 'system')
-        ? toSummarize[0].content : '';
+    const priorSummary = _extractPriorSummary();
+    // Drop the prior summary from the slice being re-summarized — we pass it
+    // as a separate hint so the server extends instead of re-summarizing it.
+    const slice = toSummarize.filter(m =>
+        !(m.role === 'system' && ((m.content || '').includes(SUMMARY_MARKER)
+            || /^Prior conversation summary/i.test(m.content || '')))
+    );
     try {
         const resp = await fetch('/api/memory/summarize', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                messages: toSummarize.map(m => ({ role: m.role, content: m.content }))
+                messages: slice.map(m => ({ role: m.role, content: m.content })),
+                prior_summary: priorSummary || undefined,
             })
         });
         if (!resp.ok) return;
         const data = await resp.json();
         const summary = (data && data.summary) ? data.summary.trim() : '';
         if (!summary) return;
-        const merged = priorSummary
-            ? `Prior conversation summary (updated):\n${summary}`
-            : `Prior conversation summary:\n${summary}`;
+        // Wrap with marker so server-side helpers recognise it.
+        const wrapped = `${SUMMARY_MARKER}\n${summary}\n${SUMMARY_MARKER_END}`;
         window.chatHistory = [
-            { role: 'system', content: merged, ts: Date.now() },
-            ...keep
+            { role: 'system', content: wrapped, ts: Date.now() },
+            ...keep.filter(m =>
+                // Drop any stale summary in the kept slice (shouldn't happen,
+                // but belt-and-braces).
+                !(m.role === 'system' && (m.content || '').includes(SUMMARY_MARKER))
+            )
         ];
     } catch (e) { /* keep original history; sliding window still protects */ }
 }
 
+// Per-message hard cap — a single giant assistant reply (e.g. a full
+// summarized document) must NOT blow the budget and cause the whole turn
+// to be dropped. We truncate in place with a visible marker so the model
+// still sees the turn happened.
+const MEMORY_PER_MSG_MAX_CHARS = 4000;
+
+function _truncateMsg(content) {
+    if (!content || content.length <= MEMORY_PER_MSG_MAX_CHARS) return content;
+    const head = content.slice(0, MEMORY_PER_MSG_MAX_CHARS);
+    const dropped = content.length - MEMORY_PER_MSG_MAX_CHARS;
+    return `${head}\n\n…[truncated ${dropped} chars for context window; full reply was shown in chat]`;
+}
+
 function buildContextWindow() {
     // Sliding window: most recent N messages, trimmed by char budget.
+    // Oversized individual messages are truncated (not dropped), so context
+    // is preserved even when one turn is huge.
     const hist = window.chatHistory.slice(-MEMORY_MAX_MESSAGES);
     let budget = MEMORY_MAX_CHARS;
     const out = [];
     for (let i = hist.length - 1; i >= 0; i--) {
         const m = hist[i];
-        const len = (m.content || '').length;
+        const content = _truncateMsg(m.content || '');
+        const len = content.length;
         if (budget - len < 0 && out.length > 0) break;
         budget -= len;
-        out.unshift({ role: m.role, content: m.content });
+        out.unshift({ role: m.role, content });
     }
     return out;
 }

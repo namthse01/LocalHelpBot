@@ -920,11 +920,42 @@
         }
 
         // ── Heartbeat: keep proxy alive while UI tab is open ──
-        setInterval(() => {
-            fetch('/api/heartbeat', { method: 'POST' }).catch(() => {});
-        }, 5000);
-        // Send first heartbeat immediately
-        fetch('/api/heartbeat', { method: 'POST' }).catch(() => {});
+        // Browsers throttle setInterval to ~1/min when the tab is backgrounded,
+        // so we also re-ping on visibility change and keep the interval slow
+        // enough to survive throttling comfortably (server idle timeout = 5min).
+        function sendHeartbeat() {
+            try {
+                // sendBeacon survives tab-throttling better than fetch when
+                // the tab is about to unload / just came back from background.
+                if (navigator.sendBeacon) {
+                    navigator.sendBeacon('/api/heartbeat', new Blob([], { type: 'application/json' }));
+                } else {
+                    fetch('/api/heartbeat', { method: 'POST', keepalive: true }).catch(() => {});
+                }
+            } catch (_) { /* best-effort */ }
+        }
+        setInterval(sendHeartbeat, 15000);
+        sendHeartbeat();
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') sendHeartbeat();
+        });
+        window.addEventListener('focus', sendHeartbeat);
+
+        // ── Auto-shutdown on UI close ──
+        // sendBeacon is the only reliable way to send a request during
+        // tab unload — fetch() gets cancelled. Server starts a short grace
+        // window; a page refresh re-pings and cancels the shutdown.
+        function signalClosing() {
+            try {
+                if (navigator.sendBeacon) {
+                    navigator.sendBeacon('/api/ui-closing', new Blob([], { type: 'application/json' }));
+                } else {
+                    fetch('/api/ui-closing', { method: 'POST', keepalive: true }).catch(() => {});
+                }
+            } catch (_) { /* best-effort */ }
+        }
+        window.addEventListener('pagehide', signalClosing);
+        window.addEventListener('beforeunload', signalClosing);
 
         async function shutdownAll() {
             if (!confirm('Shutdown LocalHelpBot? All services (Proxy, Discord...) will stop.')) return;

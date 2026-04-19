@@ -95,7 +95,10 @@ class APIProvider(BaseProvider):
         Gemma variants do NOT support systemInstruction — we prepend system
         as a leading user turn instead.
         """
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
+        # Key goes in the `x-goog-api-key` header, NOT the URL query string.
+        # URL-in-query leaks the key into every stack trace, HTTP log, and any
+        # redirected Referer header — all of which can end up in log files.
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
         is_gemma = self.model.lower().startswith("gemma")
 
         system_text = ""
@@ -130,7 +133,10 @@ class APIProvider(BaseProvider):
         body = json.dumps(body_dict).encode()
         req = urllib.request.Request(
             url, data=body,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "x-goog-api-key": self.api_key,
+            },
             method="POST",
         )
         t0 = time.perf_counter()
@@ -143,8 +149,13 @@ class APIProvider(BaseProvider):
                 err_body = he.read().decode("utf-8", errors="replace")[:1000]
             except Exception:
                 pass
-            logger.error(f"[google] HTTP {he.code} — body: {err_body}")
-            raise RuntimeError(f"Google API HTTP {he.code}: {err_body}") from he
+            # Defense-in-depth: Google's error responses sometimes echo back the
+            # request URL (which historically carried the key). Scrub before
+            # logging or re-raising so nothing lands in proxy.log plaintext.
+            from core.secrets import redact_secrets
+            safe_body = redact_secrets(err_body)
+            logger.error(f"[google] HTTP {he.code} — body: {safe_body}")
+            raise RuntimeError(f"Google API HTTP {he.code}: {safe_body}") from he
         latency_ms = int((time.perf_counter() - t0) * 1000)
 
         # Detect safety block / empty candidate
@@ -174,14 +185,18 @@ class APIProvider(BaseProvider):
             "anthropic-version": "2023-06-01",
             "content-type": "application/json"
         }
-        # Convert messages to Anthropic format (system prompt is separate)
-        system_prompt = ""
+        # Convert messages to Anthropic format (system prompt is separate).
+        # Anthropic's API takes a single `system` string — concatenate all
+        # system messages so carried conversation summaries aren't dropped.
+        system_chunks: List[str] = []
         user_messages = []
         for m in messages:
             if m["role"] == "system":
-                system_prompt = m["content"]
+                if m.get("content"):
+                    system_chunks.append(str(m["content"]))
             else:
                 user_messages.append(m)
+        system_prompt = "\n\n".join(system_chunks)
 
         body = json.dumps({
             "model": self.model,

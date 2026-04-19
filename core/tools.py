@@ -258,14 +258,35 @@ def search_web(query: str) -> str:
 # TOOL REGISTRY
 # ──────────────────────────────────────────
 
+# Beyond this size, local models reliably corrupt the JSON payload (missing
+# closing quotes, unescaped newlines). We reject large single writes and
+# instruct the model to chunk via write_file + edit_file appends. The agent
+# loop's self-heal layer picks up the hint and retries in the chunked shape.
+_WRITE_FILE_MAX_CHARS = 3000
+
 def _gated_write_file(a):
     from core.permissions import request_permission
     path = a["path"]
-    preview = (a.get("content", "") or "")[:300]
-    decision = request_permission("write_file", path, {"path": path, "bytes": len(a.get("content", "")), "preview": preview})
+    content = a.get("content", "") or ""
+    if len(content) > _WRITE_FILE_MAX_CHARS:
+        return (
+            f"ERROR: write_file content too large ({len(content)} chars > "
+            f"{_WRITE_FILE_MAX_CHARS}). Local models cannot reliably emit JSON "
+            f"this long. CHUNK YOUR WRITE:\n"
+            f"  1. Call write_file now with ONLY the first ~2500 chars (header "
+            f"+ first 1–2 sections).\n"
+            f"  2. On the next turn, call edit_file with old_string=\"\" (empty) "
+            f"and new_string=<next chunk> — it will append.\n"
+            f"     OR use edit_file to replace a placeholder anchor you leave "
+            f"at the end of the previous chunk (e.g. '<!-- CONTINUE -->').\n"
+            f"  3. Repeat until done.\n"
+            f"Do NOT retry with the full content — it will fail the same way."
+        )
+    preview = content[:300]
+    decision = request_permission("write_file", path, {"path": path, "bytes": len(content), "preview": preview})
     if not decision["allowed"]:
         return f"PERMISSION_DENIED: user declined write_file for {path} ({decision['reason']})."
-    return write_file(path, a["content"])
+    return write_file(path, content)
 
 
 def _gated_run_command(a):

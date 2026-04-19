@@ -18,6 +18,12 @@ personal_avatar/
 runtime_overrides.json
 .secret_key
 
+# Build artifacts (PyInstaller writes these; never commit)
+launcher.py
+*.spec
+build/
+dist/
+
 # Log files
 *.log
 

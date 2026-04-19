@@ -99,6 +99,11 @@ async function saveModeSettings() {
     const fallback = { type: 'local', provider: 'ollama', model: fallbackModel };
 
     if (await updateConfig({ providers: { primary, fallback } })) {
+        // Clear the in-DOM plaintext key immediately on success — the next
+        // renderModeSettings() will repaint it with the masked value from
+        // /api/config. Keeps raw keys out of browser inspector / autofill.
+        const keyInput = $id('mode-primary-key');
+        if (keyInput) keyInput.value = '';
         alert(`AI Mode updated!\nPrimary: ${provider} / ${model}\nFallback: ${fallbackModel}`);
     }
 }

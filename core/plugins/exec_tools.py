@@ -1,14 +1,14 @@
-"""
-Execution + process-management tools.
+"""Execution + process-management tools.
 
   python_exec    — run a short Python snippet in a subprocess (permission-gated).
   list_processes — snapshot of running processes (name, pid, cpu, memory).
   kill_process   — terminate a pid (permission-gated).
 
 `list_processes` / `kill_process` prefer `psutil` for richer info but fall
-back to platform utilities (tasklist / taskkill on Windows, ps / kill on Unix).
-If psutil is missing, the agent can call `install_package {"name": "psutil"}`
-which will ask the user for approval.
+back to platform utilities (tasklist / taskkill on Windows, ps / kill on
+Unix). If psutil is missing the agent can call `install_package`.
+
+All handlers return typed `ToolResult` envelopes.
 """
 from __future__ import annotations
 
@@ -17,34 +17,37 @@ import signal
 import subprocess
 import sys
 import tempfile
-from pathlib import Path
 from typing import Any, Dict
 
 from core.permissions import request_permission
-from core.tool_schema import Tool, ToolRegistry
+from core.tool_schema import ErrorCode, Tool, ToolRegistry, ToolResult
 
 
 # ──────────────────────────────────────────
 #  python_exec
 # ──────────────────────────────────────────
 
-def _python_exec(args: Dict[str, Any]) -> str:
+
+def _python_exec(args: Dict[str, Any]) -> ToolResult:
     code = args.get("code")
     timeout = int(args.get("timeout", 30))
     if not code:
-        return "ERROR: python_exec requires 'code'."
+        return ToolResult.error(ErrorCode.INVALID_ARGS, "python_exec requires 'code'.", retryable=False)
     if timeout > 300:
         timeout = 300
 
     decision = request_permission(
         "python_exec",
-        code[:80].replace("\n", " ⏎ "),
+        code[:80].replace("\n", " | "),
         {"code_preview": code[:500], "lines": code.count("\n") + 1, "timeout": timeout},
     )
     if not decision["allowed"]:
-        return f"PERMISSION_DENIED: user declined python_exec ({decision['reason']})."
+        return ToolResult.error(
+            ErrorCode.PERMISSION_DENIED,
+            f"User declined python_exec ({decision['reason']}).",
+            retryable=False,
+        )
 
-    # Write to a temp file so multi-line / large snippets don't blow up argv.
     with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False, encoding="utf-8") as f:
         f.write(code)
         script = f.name
@@ -60,11 +63,22 @@ def _python_exec(args: Dict[str, Any]) -> str:
         if result.stderr.strip():
             parts.append(f"STDERR:\n{result.stderr.strip()}")
         parts.append(f"EXIT: {result.returncode}")
-        return "\n".join(parts)
+        body = "\n".join(parts)
+        if result.returncode != 0:
+            return ToolResult.error(
+                ErrorCode.UNKNOWN, body,
+                hint="Inspect STDERR for the underlying failure.",
+                exit_code=result.returncode,
+            )
+        return ToolResult.success(body, exit_code=0)
     except subprocess.TimeoutExpired:
-        return f"ERROR: python_exec timed out after {timeout}s."
-    except Exception as e:
-        return f"ERROR: {e}"
+        return ToolResult.error(
+            ErrorCode.EXTERNAL_TIMEOUT,
+            f"python_exec timed out after {timeout}s.",
+            hint="Reduce the work or raise timeout (max 300).",
+        )
+    except Exception as e:  # noqa: BLE001
+        return ToolResult.error(ErrorCode.UNKNOWN, f"python_exec failed: {e}")
     finally:
         try:
             os.unlink(script)
@@ -76,6 +90,7 @@ def _python_exec(args: Dict[str, Any]) -> str:
 #  Process management
 # ──────────────────────────────────────────
 
+
 def _try_psutil():
     try:
         import psutil  # type: ignore
@@ -84,7 +99,7 @@ def _try_psutil():
         return None
 
 
-def _list_processes(args: Dict[str, Any]) -> str:
+def _list_processes(args: Dict[str, Any]) -> ToolResult:
     name_filter = (args.get("name_contains") or "").lower()
     limit = int(args.get("limit", 40))
     psutil = _try_psutil()
@@ -101,9 +116,8 @@ def _list_processes(args: Dict[str, Any]) -> str:
         rows = rows[:limit]
         header = f"{'PID':>7}  {'CPU%':>5}  {'MEM_MB':>8}  NAME"
         lines = [header] + [f"{pid:>7}  {cpu:>5.1f}  {mem:>8.1f}  {name}" for pid, name, cpu, mem in rows]
-        return "\n".join(lines) or "(no processes matched)"
+        return ToolResult.success("\n".join(lines) or "(no processes matched)", count=len(rows))
 
-    # Fallback: tasklist / ps
     try:
         if os.name == "nt":
             out = subprocess.run(["tasklist", "/FO", "CSV", "/NH"],
@@ -118,27 +132,30 @@ def _list_processes(args: Dict[str, Any]) -> str:
                 if name_filter and name_filter not in name.lower():
                     continue
                 rows.append(f"{pid:>7}  {mem:>12}  {name}")
-            return "\n".join(["    PID        MEMORY  NAME"] + rows[:limit]) or "(no processes matched)"
+            body = "\n".join(["    PID        MEMORY  NAME"] + rows[:limit]) or "(no processes matched)"
+            return ToolResult.success(body, count=len(rows))
         else:
             out = subprocess.run(["ps", "-eo", "pid,pcpu,rss,comm"],
                                  capture_output=True, text=True, timeout=10)
             lines = out.stdout.splitlines()[1:]
             rows = [l for l in lines if not name_filter or name_filter in l.lower()]
-            return "\n".join(rows[:limit]) or "(no processes matched)"
-    except Exception as e:
-        return f"ERROR: {e} (install psutil for better process listing)"
+            return ToolResult.success("\n".join(rows[:limit]) or "(no processes matched)", count=len(rows))
+    except Exception as e:  # noqa: BLE001
+        return ToolResult.error(
+            ErrorCode.UNKNOWN, f"list_processes failed: {e}",
+            hint="Install psutil for better process listing (`install_package` name=psutil).",
+        )
 
 
-def _kill_process(args: Dict[str, Any]) -> str:
+def _kill_process(args: Dict[str, Any]) -> ToolResult:
     pid = args.get("pid")
     if not pid:
-        return "ERROR: kill_process requires 'pid'."
+        return ToolResult.error(ErrorCode.INVALID_ARGS, "kill_process requires 'pid'.", retryable=False)
     try:
         pid = int(pid)
     except (TypeError, ValueError):
-        return f"ERROR: pid must be an integer, got {pid!r}."
+        return ToolResult.error(ErrorCode.INVALID_ARGS, f"pid must be an integer, got {pid!r}.", retryable=False)
 
-    # Label with process name for the permission modal, if we can
     label = f"pid={pid}"
     psutil = _try_psutil()
     if psutil:
@@ -149,7 +166,11 @@ def _kill_process(args: Dict[str, Any]) -> str:
 
     decision = request_permission("kill_process", str(pid), {"pid": pid, "label": label})
     if not decision["allowed"]:
-        return f"PERMISSION_DENIED: user declined kill_process for {label} ({decision['reason']})."
+        return ToolResult.error(
+            ErrorCode.PERMISSION_DENIED,
+            f"User declined kill_process for {label} ({decision['reason']}).",
+            retryable=False,
+        )
 
     try:
         if psutil:
@@ -159,24 +180,29 @@ def _kill_process(args: Dict[str, Any]) -> str:
                 p.wait(timeout=3)
             except psutil.TimeoutExpired:
                 p.kill()
-            return f"OK: terminated {label}"
+            return ToolResult.success(f"OK: terminated {label}", pid=pid)
         if os.name == "nt":
             subprocess.run(["taskkill", "/PID", str(pid), "/F"],
                            capture_output=True, text=True, timeout=5)
-            return f"OK: taskkill sent to {label}"
+            return ToolResult.success(f"OK: taskkill sent to {label}", pid=pid)
         os.kill(pid, signal.SIGTERM)
-        return f"OK: SIGTERM sent to {label}"
+        return ToolResult.success(f"OK: SIGTERM sent to {label}", pid=pid)
     except ProcessLookupError:
-        return f"ERROR: no such process {pid}"
+        return ToolResult.error(ErrorCode.FILE_NOT_FOUND, f"no such process {pid}", retryable=False)
     except PermissionError:
-        return f"ERROR: permission denied killing {pid} (try running as admin)"
-    except Exception as e:
-        return f"ERROR: {e}"
+        return ToolResult.error(
+            ErrorCode.PERMISSION_DENIED,
+            f"OS denied killing {pid} (try running as admin)",
+            retryable=False,
+        )
+    except Exception as e:  # noqa: BLE001
+        return ToolResult.error(ErrorCode.UNKNOWN, f"kill_process failed: {e}")
 
 
 # ──────────────────────────────────────────
 #  Register
 # ──────────────────────────────────────────
+
 
 def register(registry: ToolRegistry) -> None:
     registry.register(Tool(

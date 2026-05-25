@@ -22,6 +22,10 @@ from config import OLLAMA_BASE, CHAT_MODEL, LARGE_MODEL, PROXY_PORT, AGENT_PROFI
 from core.orchestrator import AgentOrchestrator
 from core import pipeline  # input preprocessing: normalize + extract + assemble
 from core import memory as mem  # session-memory helpers (summary preservation, budget)
+from core.conversation_store import derive_session_id, get_store
+from core.logs import get_logger
+
+log = get_logger("proxy")
 
 def _get_rag():
     from core.query import query_rag
@@ -57,55 +61,28 @@ CODE_SYSTEM = "You are an autonomous coding agent..."
 BROWSER_SYSTEM = "You are browser-agent, a local browser data reader..."
 WEB_SYSTEM = "You are web-creep, an autonomous web research agent..."
 
-def _ensure_budget(messages: list) -> list:
+def _ensure_budget(messages: list, *, session_id: str = "") -> list:
     """Server-side compaction safety net.
 
-    If the incoming message list is over the soft token budget, fold the
-    oldest turns into a summary system message and keep the most recent
-    turns verbatim. Runs BEFORE pipeline/orchestrator rebuild the system
-    prompt (our memory helpers then carry the summary forward).
-
-    No-op if already under budget or if summarization fails — in both cases
-    we return the original list so downstream routing still works.
+    Thin wrapper around `MemoryEngine.compact()`. Persists the resulting
+    summary to the conversation store when a session_id is known so the
+    next turn can read it from T2 instead of relying on the client to
+    echo the marker block back.
     """
+    if not messages:
+        return messages
     try:
-        if not messages:
-            return messages
-        tokens = mem.estimate_tokens(messages)
-        if tokens <= mem.DEFAULT_MAX_TOKENS:
-            return messages
         from core.providers import smart_provider as _sp
-        system, to_summarize, keep = mem.split_for_compaction(
-            messages, keep_recent_turns=mem.DEFAULT_KEEP_RECENT_TURNS
-        )
-        if not to_summarize:
-            return messages
-        # Include any prior summary from existing system messages so the
-        # summarizer can extend-not-replace.
-        prior = mem.extract_summary(system)
-        prompt_msgs = mem.build_summarizer_messages(to_summarize)
-        if prior:
-            prompt_msgs[-1]["content"] = (
-                f"Prior summary (extend this, do not discard facts):\n{prior}\n\n"
-                + prompt_msgs[-1]["content"]
-            )
-        print(f"[compact] server-side safety-net firing — "
-              f"tokens~{tokens} > {mem.DEFAULT_MAX_TOKENS}, "
-              f"summarizing {len(to_summarize)} old turns, keeping {len(keep)}", flush=True)
-        resp = _sp.chat(prompt_msgs, options={"temperature": 0.1, "num_predict": 1024})
-        summary = mem.wrap_summary_output(resp.content or "")
-        if not summary:
-            return messages
-        # Rebuild: non-summary system msgs, then summary system, then kept turns
-        non_summary_system = [m for m in system
-                              if not mem._looks_like_summary(mem._content_text(m))]
-        summary_msg = {
-            "role": "system",
-            "content": f"{mem.SUMMARY_MARKER}\n{summary}\n{mem.SUMMARY_END}",
-        }
-        return non_summary_system + [summary_msg] + keep
-    except Exception as e:
-        print(f"[compact] safety-net failed (non-fatal): {e}", flush=True)
+        engine = mem.get_default_engine()
+        prior = engine.extract_summary(messages)
+        result = engine.compact(messages, summarizer=_sp, prior_summary=prior)
+        if result.fired:
+            log.info("compact safety-net fired", extra={"session_id": session_id})
+            if session_id:
+                get_store().note(session_id, summary=result.summary)
+        return result.messages
+    except Exception as e:  # noqa: BLE001 — never fail a request on this
+        log.warning(f"compact safety-net failed (non-fatal): {e}", extra={"session_id": session_id})
         return messages
 
 
@@ -127,14 +104,25 @@ def _rag_context(query: str) -> str:
     except Exception as e:
         return f"NO_DATA (error: {e})"
 
-def _inject_rag(messages: list, user_q: str) -> list:
+def _inject_rag(messages: list, user_q: str, *, session_id: str = "") -> list:
+    """Inject retrieved RAG context into the system prompt for cad-rag.
+
+    Still legacy "auto-inject" behaviour — Slice 5 promotes RAG to a
+    first-class tool. For now we just route through the MemoryEngine so
+    the summary survives the system-prompt rewrite, and we also persist
+    any extracted summary into the session store.
+    """
+    engine = mem.get_default_engine()
     ctx = _rag_context(user_q)
-    # Preserve any carried conversation summary so long CAD chats don't lose
-    # context when we overwrite the system prompt with the RAG block.
-    carried = mem.extract_summary(messages)
+    carried = ""
+    if session_id:
+        sess = get_store().get(session_id)
+        if sess and sess.summary:
+            carried = sess.summary
+    if not carried:
+        carried = engine.extract_summary(messages)
     base = f"{CAD_SYSTEM}\n\n=== RETRIEVED CONTEXT ===\n{ctx}\n=== END CONTEXT ==="
-    new_sys = mem.merge_summary(base, carried)
-    # Drop ALL existing system messages (we folded the summary into new_sys).
+    new_sys = engine.merge_summary(base, carried)
     out = [{"role": "system", "content": new_sys}]
     for msg in messages:
         if msg.get("role") == "system":
@@ -142,28 +130,53 @@ def _inject_rag(messages: list, user_q: str) -> list:
         out.append(msg)
     return out
 
-def _inject_system(messages: list, system: str) -> list:
-    # Always preserve any carried summary, even when the client already sent
-    # a system message. We merge summary → new system and drop summary-only
-    # system messages to avoid duplicating the block.
-    carried = mem.extract_summary(messages)
+def _inject_system(messages: list, system: str, *, session_id: str = "") -> list:
+    """Replace the system prompt for forward-only specialists (ui-agent,
+    web-creep, browser-agent). Preserves any carried summary — either
+    from the session store (preferred) or extracted from the messages."""
+    engine = mem.get_default_engine()
+    carried = ""
+    if session_id:
+        sess = get_store().get(session_id)
+        if sess and sess.summary:
+            carried = sess.summary
+    if not carried:
+        carried = engine.extract_summary(messages)
     non_summary_system = [
         m for m in messages
         if m.get("role") == "system" and not mem._looks_like_summary(mem._content_text(m))
     ]
     if non_summary_system and not carried:
-        # Nothing to merge — keep the caller's system as-is.
         return messages
-    merged = mem.merge_summary(system, carried)
+    merged = engine.merge_summary(system, carried)
     out = [{"role": "system", "content": merged}]
     for m in messages:
         if m.get("role") == "system":
-            # If it's a non-summary system the caller sent, fold it in too.
             if not mem._looks_like_summary(mem._content_text(m)):
                 out[0]["content"] = out[0]["content"] + "\n\n" + mem._content_text(m)
             continue
         out.append(m)
     return out
+
+def _session_id_from_request(headers: dict, payload: dict) -> str:
+    """Derive a stable session_id for this chat request.
+
+    Order of preference:
+      1. `X-Session-Id` HTTP header (UI / Discord adapter / MCP send it).
+      2. `session_id` field in the JSON body (some clients prefer body).
+      3. Hash of (first user message + today's date) — fallback for
+         vanilla Ollama clients that ship no identity at all.
+    """
+    explicit = ""
+    if isinstance(headers, dict):
+        for k, v in headers.items():
+            if k.lower() == "x-session-id":
+                explicit = (v or "").strip()
+                break
+    if not explicit and isinstance(payload, dict):
+        explicit = (payload.get("session_id") or "").strip()
+    return derive_session_id(payload.get("messages", []) if isinstance(payload, dict) else [], explicit=explicit)
+
 
 def _last_user_msg(messages: list) -> str:
     for msg in reversed(messages):
@@ -284,7 +297,7 @@ def _inflight_dec():
 
 def _shutdown_all():
     _stop_discord()
-    print("[shutdown] All services stopped. Exiting.", flush=True)
+    log.info("All services stopped. Exiting.")
     if _server_ref:
         _server_ref.shutdown()
     sys.exit(0)
@@ -305,14 +318,15 @@ def _heartbeat_watchdog():
             continue
         idle = time.time() - _last_heartbeat
         if idle > HEARTBEAT_TIMEOUT:
-            print(f"[heartbeat] UI idle for {int(idle)}s (>{HEARTBEAT_TIMEOUT}s) "
-                  f"and no in-flight work — shutting down.", flush=True)
+            log.info(f"UI idle for {int(idle)}s (>{HEARTBEAT_TIMEOUT}s) "
+                     f"and no in-flight work — shutting down.")
             _shutdown_all()
             break
 
 class ProxyHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
-        print(f"[proxy] {fmt % args}", flush=True)
+        # HTTP access lines go at DEBUG level — they're noisy (heartbeats, etc.)
+        log.debug(fmt % args)
 
     def do_GET(self):
         if self.path == "/":
@@ -380,12 +394,55 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"pending": list_pending()}).encode())
             return
 
-        if self.path == "/api/stats":
+        if self.path == "/api/stats" or self.path == "/api/stats/turns":
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(json.dumps({"recent": _RECENT_STATS}).encode())
+            return
+
+        if self.path == "/api/healthcheck":
+            try:
+                from core.healthcheck import run_all, to_dict
+                overall, results = run_all(is_self=True)
+                payload = to_dict(overall, results)
+            except Exception as e:
+                payload = {"status": "red", "checks": [{"name": "healthcheck", "status": "fail", "message": str(e)}]}
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps(payload).encode())
+            return
+
+        if self.path.startswith("/api/logs/tail"):
+            # Query params: subsystem=<name>&since=<ts>&limit=<n>
+            from urllib.parse import urlparse, parse_qs
+            from core.logs import tail_events, SUBSYSTEMS
+            qs = parse_qs(urlparse(self.path).query)
+            subsystem = (qs.get("subsystem") or [None])[0]
+            since = None
+            try:
+                if qs.get("since"):
+                    since = float(qs["since"][0])
+            except (TypeError, ValueError):
+                since = None
+            limit = 200
+            try:
+                if qs.get("limit"):
+                    limit = max(1, min(1000, int(qs["limit"][0])))
+            except (TypeError, ValueError):
+                limit = 200
+            events = tail_events(subsystem=subsystem, since_ts=since, limit=limit)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "events": events,
+                "subsystems": SUBSYSTEMS,
+            }).encode())
             return
 
         if self.path == "/api/tags":
@@ -487,16 +544,16 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         from core.providers import smart_provider
                         smart_provider.reload()
                     except Exception as e:
-                        print(f"[config] smart_provider reload failed: {e}")
+                        log.warning(f"smart_provider reload failed: {e}")
 
-                print(f"[config] Applied & persisted: {applied}")
+                log.info(f"config applied & persisted: {applied}")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(json.dumps({"status": "success", "applied": applied}).encode())
                 return
             except Exception as e:
-                print(f"[config] ERROR: {e}")
+                log.error(f"config save failed: {e}")
                 self.send_response(500)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
@@ -563,7 +620,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(json.dumps({"success": ok, "message": msg, "connected": _discord_status()}).encode())
-            print(f"[discord] {msg}", flush=True)
+            log.info(f"discord: {msg}")
             return
 
         if path == "/api/discord/disconnect":
@@ -573,7 +630,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(json.dumps({"success": ok, "message": msg, "connected": _discord_status()}).encode())
-            print(f"[discord] {msg}", flush=True)
+            log.info(f"discord: {msg}")
             return
 
         if path == "/api/ui-closing":
@@ -586,9 +643,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
             global _last_heartbeat
             if _inflight_requests <= 0:
                 _last_heartbeat = time.time() - (HEARTBEAT_TIMEOUT - 15)
-                print("[ui-closing] UI signaled close — 15s grace window started.", flush=True)
+                log.info("UI signaled close — 15s grace window started.")
             else:
-                print("[ui-closing] UI closing but work in flight — ignored.", flush=True)
+                log.info("UI closing but work in flight — ignored.")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")
@@ -617,63 +674,77 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
         model = payload.get("model", "")
 
+        # Derive a stable session id once per chat request and make sure
+        # the store knows about it. We pass `sid` down into every model
+        # branch so memory tiers can read T2 (goal/files/sticky/summary).
+        sid = _session_id_from_request(dict(self.headers), payload) if is_chat else ""
+        if sid:
+            get_store().get_or_create(sid, source="ui")
+            user_first = _last_user_msg(payload.get("messages", []))
+            if user_first:
+                get_store().note(sid, goal=user_first)
+
         if model == AUTO_MODEL and is_chat:
-            messages = _ensure_budget(payload.get("messages", []))
+            messages = _ensure_budget(payload.get("messages", []), session_id=sid)
             # Enrich with extracted facts (paths, filenames, verbs) + output
             # contract. Orchestrator owns the role prompt, so base_system="".
             messages = pipeline.prepare(messages, base_system="")
             user_q = _last_user_msg(messages)
-            print(f"[orchestrator] handling request: {user_q!r}", flush=True)
-            self._run_agent_response(messages, {}, orchestrator_mode=True, user_q=user_q)
+            log.info(f"orchestrator handling request: {user_q!r}", extra={"session_id": sid})
+            self._run_agent_response(messages, {}, orchestrator_mode=True, user_q=user_q, session_id=sid)
             return
 
         if model == CAD_MODEL and is_chat:
-            messages = _ensure_budget(payload.get("messages", []))
+            messages = _ensure_budget(payload.get("messages", []), session_id=sid)
             user_q   = _last_user_msg(messages)
-            payload["messages"] = _inject_rag(messages, user_q)
+            payload["messages"] = _inject_rag(messages, user_q, session_id=sid)
             payload["model"]    = REAL_MODEL
             raw = json.dumps(payload).encode()
-            self._forward_and_reply(path, raw)
+            self._forward_and_reply(path, raw, session_id=sid)
             return
 
         if model == UI_MODEL and is_chat:
-            messages = _ensure_budget(payload.get("messages", []))
-            payload["messages"] = _inject_system(messages, UI_SYSTEM)
+            messages = _ensure_budget(payload.get("messages", []), session_id=sid)
+            payload["messages"] = _inject_system(messages, UI_SYSTEM, session_id=sid)
             payload["model"]    = REAL_MODEL
             raw = json.dumps(payload).encode()
-            self._forward_and_reply(path, raw)
+            self._forward_and_reply(path, raw, session_id=sid)
             return
 
         if model == CODE_MODEL and is_chat:
-            FILE_TOOLS, WEB_TOOLS = _get_tools()
-            all_tools = {**FILE_TOOLS, **WEB_TOOLS}
-            messages = _ensure_budget(payload.get("messages", []))
-            messages = pipeline.prepare(messages, CODE_SYSTEM)
-            self._run_agent_response(messages, all_tools)
+            # Route through the orchestrator's "main" specialist so the request
+            # gets the full tool registry (incl. read_pdf/write_pdf/install_package
+            # loaded from core/plugins/) AND the main profile's PLAN/ACT/VERIFY +
+            # WHEN-A-TOOL-FAILS prompt. The legacy FILE_TOOLS+WEB_TOOLS path had
+            # none of those, which is why PDF tasks silently failed.
+            messages = _ensure_budget(payload.get("messages", []), session_id=sid)
+            messages = pipeline.prepare(messages, base_system="")
+            user_q = _last_user_msg(messages)
+            self._run_agent_response(messages, {}, specialist="main", user_q=user_q, session_id=sid)
             return
 
         if model == WEB_MODEL and is_chat:
             _, WEB_TOOLS = _get_tools()
-            messages = _ensure_budget(payload.get("messages", []))
+            messages = _ensure_budget(payload.get("messages", []), session_id=sid)
             messages = pipeline.prepare(messages, WEB_SYSTEM)
-            self._run_agent_response(messages, WEB_TOOLS)
+            self._run_agent_response(messages, WEB_TOOLS, session_id=sid)
             return
 
         if model == BROWSER_MODEL and is_chat:
             BROWSER_TOOLS = _get_browser_tools()
-            messages = _ensure_budget(payload.get("messages", []))
+            messages = _ensure_budget(payload.get("messages", []), session_id=sid)
             messages = pipeline.prepare(messages, BROWSER_SYSTEM)
-            self._run_agent_response(messages, BROWSER_TOOLS)
+            self._run_agent_response(messages, BROWSER_TOOLS, session_id=sid)
             return
 
         if model == DEEP_MODEL and is_chat:
             # Deep model gets its own compaction too — it's the most likely
             # to have a long context buildup since users pick it for complex
             # multi-turn discussions.
-            payload["messages"] = _ensure_budget(payload.get("messages", []))
+            payload["messages"] = _ensure_budget(payload.get("messages", []), session_id=sid)
             payload["model"] = LARGE_MODEL
             raw = json.dumps(payload).encode()
-            self._forward_and_reply(path, raw)
+            self._forward_and_reply(path, raw, session_id=sid)
             return
 
         headers = dict(self.headers)
@@ -684,20 +755,25 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(resp_body)
 
-    def _forward_and_reply(self, path: str, raw: bytes):
+    def _forward_and_reply(self, path: str, raw: bytes, *, session_id: str = ""):
         headers = dict(self.headers)
         status, resp_body, ct = _forward(path, raw, headers)
         self.send_response(status)
         self.send_header("Content-Type", ct)
         self.send_header("Access-Control-Allow-Origin", "*")
+        if session_id:
+            self.send_header("X-Session-Id", session_id)
         self.end_headers()
         self.wfile.write(resp_body)
 
-    def _stream_headers(self):
+    def _stream_headers(self, *, session_id: str = ""):
         self.send_response(200)
         self.send_header("Content-Type", "application/x-ndjson")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Expose-Headers", "X-Session-Id")
+        if session_id:
+            self.send_header("X-Session-Id", session_id)
         self.end_headers()
 
     def _event_emitter(self, wfile):
@@ -743,16 +819,18 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 pass
         return emit
 
-    def _run_agent_response(self, messages: list, tools: dict, orchestrator_mode: bool = False, user_q: str = ""):
+    def _run_agent_response(self, messages: list, tools: dict, orchestrator_mode: bool = False, user_q: str = "", specialist: str = "", *, session_id: str = ""):
         import time as _t
-        self._stream_headers()
+        self._stream_headers(session_id=session_id)
         wfile = self.wfile
         emit = self._event_emitter(wfile)
         t0 = _t.perf_counter()
         _inflight_inc()
         try:
             if orchestrator_mode:
-                final = orchestrator.handle_request(user_q, conversation=messages, stream_cb=emit)
+                final = orchestrator.handle_request(user_q, conversation=messages, stream_cb=emit, session_id=session_id)
+            elif specialist:
+                final = orchestrator.run_specialist(specialist, user_q, conversation=messages, stream_cb=emit, session_id=session_id)
             else:
                 run_agent = _get_agent()
                 final = run_agent(messages, tools, stream_cb=emit)
@@ -768,15 +846,16 @@ class ProxyHandler(BaseHTTPRequestHandler):
             last_timing = getattr(_sp, "_last_timing", "")
         except Exception:
             active, last_timing = "?", ""
-        if orchestrator_mode:
+        if orchestrator_mode or specialist:
             _record_stat(user_q, total_ms, active, last_timing)
         done_chunk = json.dumps({
             "model":          REAL_MODEL,
             "message":        {"role": "assistant", "content": final},
-            "agent_event":    {"type": "done", "total_ms": total_ms, "active": active},
+            "agent_event":    {"type": "done", "total_ms": total_ms, "active": active, "session_id": session_id},
             "done":           True,
             "done_reason":    "stop",
             "total_duration": 0,
+            "session_id":     session_id,
         }) + "\n"
         try:
             wfile.write(done_chunk.encode())
@@ -786,20 +865,34 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
 def main():
     global _server_ref
+    # Enable session persistence so a restarted proxy still recognises
+    # in-flight conversations from the same day. JSONL is best-effort —
+    # request handling never blocks on disk IO.
+    sessions_dir = Path(__file__).parent.parent / "data" / "sessions"
+    try:
+        get_store().enable_jsonl_persistence(sessions_dir)
+    except Exception as e:
+        log.warning(f"session-store persistence disabled: {e}")
+
     server = ThreadingHTTPServer(("localhost", PROXY_PORT), ProxyHandler)
     server.daemon_threads = True
     _server_ref = server
-    print(f"[rag-proxy] http://localhost:{PROXY_PORT}", flush=True)
-    print(f"  Embed model   : mxbai-embed-large (Ollama)", flush=True)
-    print(f"  cad-rag       -> RAG + {REAL_MODEL}", flush=True)
-    print(f"  ui-agent      -> UI system + {REAL_MODEL}", flush=True)
-    print(f"  code-agent    -> agentic file/cmd/web loop [{REAL_MODEL}]", flush=True)
-    print(f"  web-creep     -> agentic web search/fetch loop [{REAL_MODEL}]", flush=True)
-    print(f"  browser-agent -> local Chrome/Edge cookies & storage reader", flush=True)
-    print(f"  deep-agent    -> deep reasoning [{LARGE_MODEL}]", flush=True)
-    print(f"  auto-agent    -> Smart Orchestrator (delegates to sub-agents)", flush=True)
-    print(f"  [pipeline]    input preprocessing ACTIVE (normalize + extract + assemble)", flush=True)
-    print(f"  [auto-shutdown] Proxy will stop when UI tab is closed.", flush=True)
+
+    banner = (
+        f"LocalHelpBot proxy listening on http://localhost:{PROXY_PORT}\n"
+        f"  cad-rag       -> RAG + {REAL_MODEL}\n"
+        f"  ui-agent      -> UI system + {REAL_MODEL}\n"
+        f"  code-agent    -> main specialist (full registry)\n"
+        f"  web-creep     -> agentic web search/fetch loop\n"
+        f"  browser-agent -> local Chrome/Edge cookies & storage reader\n"
+        f"  deep-agent    -> deep reasoning [{LARGE_MODEL}]\n"
+        f"  auto-agent    -> Smart Orchestrator (delegates to sub-agents)\n"
+        f"  embed model    : mxbai-embed-large (Ollama)\n"
+        f"  pipeline       : input preprocessing ACTIVE\n"
+        f"  session store  : {sessions_dir}\n"
+        f"  auto-shutdown  : proxy stops when UI tab closes."
+    )
+    log.info(banner)
     threading.Thread(target=_heartbeat_watchdog, daemon=True).start()
     server.serve_forever()
 

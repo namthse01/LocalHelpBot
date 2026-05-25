@@ -65,6 +65,9 @@
             <button onclick="switchTab('mode')" id="tab-mode" class="px-4 py-1.5 rounded-lg text-sm font-medium text-slate-400 hover:text-slate-200 transition-all">
                 <i class="fas fa-exchange-alt mr-2"></i> Change Mode
             </button>
+            <button onclick="switchTab('logs')" id="tab-logs" class="px-4 py-1.5 rounded-lg text-sm font-medium text-slate-400 hover:text-slate-200 transition-all">
+                <i class="fas fa-list-ul mr-2"></i> Logs
+            </button>
         </div>
 
         <div class="flex items-center gap-3">
@@ -202,6 +205,20 @@
                     <h2 class="text-2xl font-bold text-slate-200">Change AI Mode</h2>
                     <p class="text-slate-400">Switch between Cloud APIs and Local Models.</p>
                 </div>
+
+                <!-- System Health banner — populated by /api/healthcheck -->
+                <div id="health-banner" class="mb-6 rounded-xl border p-4 flex items-start gap-3 hidden">
+                    <i id="health-icon" class="fas fa-circle-info mt-0.5"></i>
+                    <div class="flex-1">
+                        <div class="flex items-center justify-between">
+                            <h4 id="health-title" class="text-sm font-semibold">Checking system health…</h4>
+                            <button onclick="refreshHealth()" class="text-xs text-slate-400 hover:text-slate-200">
+                                <i class="fas fa-rotate"></i> Re-check
+                            </button>
+                        </div>
+                        <ul id="health-details" class="text-xs mt-2 space-y-1 text-slate-400"></ul>
+                    </div>
+                </div>
                 <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-6">
                     <div class="p-4 bg-indigo-600/10 border border-indigo-500/30 rounded-xl mb-6">
                         <div class="flex gap-3">
@@ -258,6 +275,31 @@
                 </div>
             </div>
         </div>
+        <!-- TAB 6: LOGS -->
+        <div id="content-logs" class="tab-content h-full overflow-hidden p-6 flex flex-col">
+            <div class="flex justify-between items-center mb-4">
+                <div>
+                    <h2 class="text-xl font-bold text-slate-200">Live Logs</h2>
+                    <p class="text-xs text-slate-500">Structured subsystem events from the proxy. Auto-refresh every 2s.</p>
+                </div>
+                <div class="flex items-center gap-3">
+                    <select id="logs-filter" class="bg-slate-800 border border-slate-700 text-xs text-slate-200 rounded-md px-2 py-1 focus:outline-none focus:border-indigo-500">
+                        <option value="">All subsystems</option>
+                    </select>
+                    <input id="logs-search" type="text" placeholder="Search…" class="bg-slate-800 border border-slate-700 text-xs text-slate-200 rounded-md px-2 py-1 focus:outline-none focus:border-indigo-500" style="width:200px">
+                    <label class="flex items-center gap-1 text-xs text-slate-400 select-none">
+                        <input type="checkbox" id="logs-autoscroll" checked> follow
+                    </label>
+                    <button onclick="clearLogsPanel()" class="text-slate-400 hover:text-slate-200 text-xs">
+                        <i class="fas fa-eraser mr-1"></i> Clear
+                    </button>
+                </div>
+            </div>
+            <div id="logs-panel" class="flex-1 overflow-auto bg-slate-950 border border-slate-800 rounded-xl p-3 custom-scrollbar" style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;line-height:1.55">
+                <div class="text-slate-600 text-center py-8 text-xs">Waiting for events…</div>
+            </div>
+        </div>
+
     </main>
 
     <!-- Agent Edit Modal -->
@@ -873,25 +915,90 @@
         }
         setInterval(pollPermissions, 1500);
 
+        const RISK_STYLE = {
+            low:    { color: '#22c55e', icon: 'fa-shield-check',         label: 'Low risk'    },
+            medium: { color: '#f59e0b', icon: 'fa-shield-halved',        label: 'Medium risk' },
+            high:   { color: '#ef4444', icon: 'fa-triangle-exclamation', label: 'HIGH risk'   },
+        };
+
+        function renderPermPreview(preview, p) {
+            const k = preview && preview.kind;
+            if (k === 'diff') {
+                const diff = (preview.diff || '').split('\n').map(line => {
+                    let color = '#cbd5e1';
+                    if (line.startsWith('+')) color = '#22c55e';
+                    else if (line.startsWith('-')) color = '#ef4444';
+                    else if (line.startsWith('@@')) color = '#60a5fa';
+                    return `<span style="color:${color}">${escapeHtml(line)}</span>`;
+                }).join('\n');
+                return `<div><strong>Path:</strong> <code>${escapeHtml(preview.path || '')}</code>${preview.replace_all ? '<span style="color:#f59e0b;font-size:11px"> · replace_all</span>' : ''}</div>
+                        <div style="margin-top:10px"><strong>Diff:</strong>
+                          <pre style="max-height:280px;overflow:auto;background:#0f172a;padding:10px;border-radius:6px;font-family:ui-monospace,monospace;font-size:12px;white-space:pre;line-height:1.5">${diff || '(no preview)'}</pre>
+                        </div>`;
+            }
+            if (k === 'command') {
+                return `<div><strong>Command:</strong></div>
+                        <pre style="background:#0a0a0a;color:#a3e635;padding:10px;border-radius:6px;font-family:ui-monospace,monospace;font-size:12px;white-space:pre-wrap;margin-top:6px">$ ${escapeHtml(preview.command || '')}</pre>
+                        ${preview.cwd ? `<div style="margin-top:6px"><strong>CWD:</strong> <code>${escapeHtml(preview.cwd)}</code></div>` : ''}`;
+            }
+            if (k === 'exec') {
+                return `<div><strong>Python snippet</strong> · ${preview.lines || '?'} lines · timeout ${preview.timeout || '?'}s</div>
+                        <pre style="max-height:260px;overflow:auto;background:#0f172a;padding:10px;border-radius:6px;font-family:ui-monospace,monospace;font-size:12px;white-space:pre-wrap;margin-top:6px;color:#c7d2fe">${escapeHtml(preview.code || '')}</pre>`;
+            }
+            if (k === 'write') {
+                return `<div><strong>Path:</strong> <code>${escapeHtml(preview.path || '')}</code></div>
+                        <div><strong>Size:</strong> ${preview.bytes ?? '?'} chars</div>
+                        <div style="margin-top:8px"><strong>Preview:</strong>
+                          <pre style="max-height:200px;overflow:auto;background:#0f172a;padding:8px;border-radius:4px;font-size:11px;color:#94a3b8;white-space:pre-wrap">${escapeHtml(preview.preview || '')}</pre>
+                        </div>`;
+            }
+            if (k === 'delete') {
+                return `<div style="color:#fca5a5"><strong>About to delete ${preview.is_dir ? 'directory' : 'file'}:</strong></div>
+                        <code style="display:block;background:#0f172a;padding:8px;border-radius:4px;margin-top:6px">${escapeHtml(preview.path || '')}</code>
+                        ${preview.size != null ? `<div style="margin-top:6px;font-size:11px;color:#94a3b8">${preview.size} bytes</div>` : ''}`;
+            }
+            if (k === 'move') {
+                return `<div><strong>From:</strong> <code>${escapeHtml(preview.src || '')}</code></div>
+                        <div style="margin-top:4px"><strong>To:</strong> <code>${escapeHtml(preview.dst || '')}</code></div>
+                        ${preview.overwrite ? '<div style="color:#fbbf24;margin-top:6px">⚠ Will overwrite existing destination</div>' : ''}`;
+            }
+            if (k === 'install') {
+                return `<div><strong>Package:</strong> <code>${escapeHtml(preview.package || '')}</code></div>
+                        <div style="margin-top:4px"><strong>Reason:</strong> ${escapeHtml(preview.reason || '(none)')}</div>
+                        ${preview.command ? `<pre style="background:#0a0a0a;color:#a3e635;padding:8px;border-radius:6px;font-size:11px;margin-top:8px">$ ${escapeHtml(preview.command)}</pre>` : ''}`;
+            }
+            if (k === 'kill') {
+                return `<div style="color:#fca5a5"><strong>Terminate process:</strong></div>
+                        <code style="display:block;background:#0f172a;padding:8px;border-radius:4px;margin-top:6px">${escapeHtml(preview.label || ('pid=' + preview.pid))}</code>`;
+            }
+            if (k === 'url') {
+                return `<div><strong>Host:</strong> <code style="color:#fbbf24">${escapeHtml(preview.host || '(unknown)')}</code></div>
+                        <div style="margin-top:6px"><strong>URL:</strong> <code style="word-break:break-all">${escapeHtml(preview.url || '')}</code></div>`;
+            }
+            // Legacy fallback (when no structured preview is available)
+            if (p && p.details && p.details.command) {
+                return `<div><strong>Command:</strong> <code>${escapeHtml(p.details.command)}</code></div>
+                        ${p.details.cwd ? `<div><strong>CWD:</strong> <code>${escapeHtml(p.details.cwd)}</code></div>` : ''}`;
+            }
+            return `<pre style="background:#0f172a;padding:8px;border-radius:4px;font-size:11px;color:#94a3b8;white-space:pre-wrap">${escapeHtml(JSON.stringify(p?.details || {}, null, 2))}</pre>`;
+        }
+
         function showPermissionModal(p) {
             const existing = document.getElementById('perm-modal-' + p.id);
             if (existing) return;
             const wrap = document.createElement('div');
             wrap.id = 'perm-modal-' + p.id;
             wrap.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:9999;display:flex;align-items:center;justify-content:center;';
-            const details = p.tool === 'write_file'
-                ? `<div><strong>Path:</strong> <code>${escapeHtml(p.details.path)}</code></div>
-                   <div><strong>Size:</strong> ${p.details.bytes} bytes</div>
-                   <div style="margin-top:8px"><strong>Preview:</strong><pre style="max-height:200px;overflow:auto;background:#0f172a;padding:8px;border-radius:4px;font-size:11px;color:#94a3b8;white-space:pre-wrap">${escapeHtml(p.details.preview || '')}</pre></div>`
-                : `<div><strong>Command:</strong> <code>${escapeHtml(p.details.command)}</code></div>
-                   ${p.details.cwd ? `<div><strong>CWD:</strong> <code>${escapeHtml(p.details.cwd)}</code></div>` : ''}`;
+            const risk = RISK_STYLE[p.risk] || RISK_STYLE.medium;
+            const previewHtml = renderPermPreview(p.preview || { kind: 'generic' }, p);
             wrap.innerHTML = `
-                <div style="background:#1e293b;border:1px solid #334155;border-radius:12px;padding:24px;max-width:560px;width:90%;color:#e2e8f0">
-                    <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
-                        <i class="fas fa-shield-halved" style="color:#f59e0b;font-size:20px"></i>
-                        <h3 style="font-size:18px;font-weight:600">Agent requests permission: <span style="color:#fbbf24">${p.tool}</span></h3>
+                <div style="background:#1e293b;border:1px solid #334155;border-left:4px solid ${risk.color};border-radius:12px;padding:24px;max-width:680px;width:92%;color:#e2e8f0;max-height:88vh;overflow:auto">
+                    <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px">
+                        <i class="fas ${risk.icon}" style="color:${risk.color};font-size:20px"></i>
+                        <h3 style="font-size:18px;font-weight:600">Agent requests permission: <span style="color:#fbbf24">${escapeHtml(p.tool)}</span></h3>
                     </div>
-                    <div style="font-size:13px;color:#cbd5e1;line-height:1.6">${details}</div>
+                    <div style="font-size:11px;color:${risk.color};margin-bottom:14px;text-transform:uppercase;letter-spacing:.05em;font-weight:600">${risk.label}</div>
+                    <div style="font-size:13px;color:#cbd5e1;line-height:1.6">${previewHtml}</div>
                     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:20px;flex-wrap:wrap">
                         <button data-act="deny" class="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-sm">Deny</button>
                         <button data-act="once" class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-sm">Allow once</button>
@@ -964,6 +1071,128 @@
             } catch (e) { /* server is shutting down */ }
             document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column;gap:16px"><i class="fas fa-power-off" style="font-size:48px;color:#475569"></i><h2 style="color:#94a3b8;font-size:20px">LocalHelpBot has been shut down</h2><p style="color:#64748b;font-size:14px">Close this tab. To restart, run <code>start_localhelpbot</code> in terminal.</p></div>';
         }
+
+        // ── Health banner (Change Mode tab) ──
+        const HEALTH_STYLE = {
+            green:  { bg: 'bg-emerald-900/20', border: 'border-emerald-600/40', icon: 'fa-circle-check',          iconColor: '#34d399', title: 'All systems green' },
+            yellow: { bg: 'bg-amber-900/20',   border: 'border-amber-600/40',   icon: 'fa-triangle-exclamation',  iconColor: '#fbbf24', title: 'System warnings'   },
+            red:    { bg: 'bg-red-900/20',     border: 'border-red-600/40',     icon: 'fa-circle-xmark',          iconColor: '#f87171', title: 'System failures'   },
+        };
+
+        async function refreshHealth() {
+            const banner = $id('health-banner');
+            if (!banner) return;
+            try {
+                const r = await fetch('/api/healthcheck');
+                const data = await r.json();
+                const style = HEALTH_STYLE[data.status] || HEALTH_STYLE.yellow;
+                banner.className = `mb-6 rounded-xl border p-4 flex items-start gap-3 ${style.bg} ${style.border}`;
+                const icon = $id('health-icon');
+                if (icon) { icon.className = `fas ${style.icon} mt-0.5`; icon.style.color = style.iconColor; }
+                if ($id('health-title')) $id('health-title').textContent = style.title;
+                const list = $id('health-details');
+                if (list) {
+                    list.innerHTML = '';
+                    (data.checks || []).forEach(c => {
+                        const li = document.createElement('li');
+                        const color = c.status === 'pass' ? '#34d399' : (c.status === 'warn' ? '#fbbf24' : '#f87171');
+                        const sym = c.status === 'pass' ? '✓' : (c.status === 'warn' ? '!' : '✗');
+                        li.innerHTML = `<span style="color:${color};font-weight:600">${sym}</span> <span style="color:#cbd5e1">${escapeHtml(c.name)}</span>: ${escapeHtml(c.message)}${c.detail ? `<span class="text-slate-500"> — ${escapeHtml(c.detail)}</span>` : ''}`;
+                        list.appendChild(li);
+                    });
+                }
+            } catch (e) {
+                banner.classList.remove('hidden');
+            }
+        }
+        // Refresh when user switches to Change Mode tab; also on first load.
+        const _origSwitchTab = switchTab;
+        switchTab = function(tabId) {
+            _origSwitchTab(tabId);
+            if (tabId === 'mode') refreshHealth();
+        };
+
+        // ── Logs tab: poll /api/logs/tail and render structured events ──
+        let _lastLogTs = 0;
+        let _logsKnownSubsystems = new Set();
+
+        const LEVEL_STYLE = {
+            DEBUG:   { color: '#64748b', icon: 'fa-circle-dot' },
+            INFO:    { color: '#60a5fa', icon: 'fa-circle-info' },
+            WARNING: { color: '#fbbf24', icon: 'fa-triangle-exclamation' },
+            ERROR:   { color: '#f87171', icon: 'fa-circle-xmark' },
+            CRITICAL:{ color: '#ef4444', icon: 'fa-skull-crossbones' },
+        };
+
+        function clearLogsPanel() {
+            const panel = $id('logs-panel');
+            if (panel) panel.innerHTML = '';
+            _lastLogTs = 0;
+        }
+
+        function rebuildSubsystemFilter(subs) {
+            const sel = $id('logs-filter');
+            if (!sel) return;
+            const current = sel.value;
+            for (const s of subs) _logsKnownSubsystems.add(s);
+            const sorted = [...new Set([...sel.options].map(o => o.value).concat([...subs])
+                .filter(v => v !== ''))].sort();
+            sel.innerHTML = '<option value="">All subsystems</option>';
+            for (const s of sorted) {
+                const opt = document.createElement('option');
+                opt.value = s; opt.textContent = s;
+                if (s === current) opt.selected = true;
+                sel.appendChild(opt);
+            }
+        }
+
+        function formatLogRow(e) {
+            const lvl = LEVEL_STYLE[e.level] || LEVEL_STYLE.INFO;
+            const date = new Date((e.ts || 0) * 1000);
+            const ts = `${String(date.getHours()).padStart(2,'0')}:${String(date.getMinutes()).padStart(2,'0')}:${String(date.getSeconds()).padStart(2,'0')}`;
+            const sid = e.session_id ? ` <span style="color:#475569">sid=${escapeHtml(String(e.session_id).slice(0,10))}</span>` : '';
+            const tool = e.tool ? ` <span style="color:#a78bfa">tool=${escapeHtml(e.tool)}</span>` : '';
+            return `<div style="padding:1px 0;color:#cbd5e1">
+                <span style="color:#475569">${ts}</span>
+                <i class="fas ${lvl.icon}" style="color:${lvl.color};width:14px"></i>
+                <span style="color:${lvl.color};font-weight:600;display:inline-block;width:60px">${e.level}</span>
+                <span style="color:#a5b4fc;display:inline-block;min-width:110px">[${escapeHtml(e.subsystem || '')}]</span>
+                ${escapeHtml(e.msg || '')}${sid}${tool}
+            </div>`;
+        }
+
+        async function refreshLogs() {
+            // Don't poll if the user isn't looking at this tab.
+            const tab = $id('content-logs');
+            if (!tab || !tab.classList.contains('active')) return;
+            try {
+                const subsystem = $id('logs-filter')?.value || '';
+                const url = `/api/logs/tail?limit=200${subsystem ? '&subsystem=' + encodeURIComponent(subsystem) : ''}${_lastLogTs ? '&since=' + _lastLogTs : ''}`;
+                const r = await fetch(url);
+                if (!r.ok) return;
+                const data = await r.json();
+                if (data.subsystems) rebuildSubsystemFilter(data.subsystems);
+                const events = data.events || [];
+                if (events.length === 0) return;
+                _lastLogTs = events[events.length - 1].ts || _lastLogTs;
+                const panel = $id('logs-panel');
+                if (!panel) return;
+                // Replace the placeholder if it's the only child
+                if (panel.children.length === 1 && panel.firstElementChild?.textContent?.includes('Waiting')) {
+                    panel.innerHTML = '';
+                }
+                const search = ($id('logs-search')?.value || '').toLowerCase();
+                const html = events
+                    .filter(e => !search || (e.msg || '').toLowerCase().includes(search) || (e.subsystem || '').toLowerCase().includes(search))
+                    .map(formatLogRow)
+                    .join('');
+                panel.insertAdjacentHTML('beforeend', html);
+                // Cap the panel at ~1500 rows to keep DOM light
+                while (panel.children.length > 1500) panel.removeChild(panel.firstChild);
+                if ($id('logs-autoscroll')?.checked) panel.scrollTop = panel.scrollHeight;
+            } catch (_) { /* silent */ }
+        }
+        setInterval(refreshLogs, 2000);
 
         // Initialize immediately
         init();

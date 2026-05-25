@@ -12,6 +12,7 @@ import logging
 from core.scheduler import TaskScheduler
 from core.orchestrator import AgentOrchestrator
 from core.tools import FILE_TOOLS, WEB_TOOLS
+from core.conversation_store import derive_discord_session_id
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -64,15 +65,31 @@ async def on_message(message):
     # Handle the request
     async with message.channel.typing():
         try:
+            # Stable per-thread session id so the bot remembers context
+            # across consecutive messages in the same (guild, channel,
+            # author) tuple. Stays frozen with the rest of this file —
+            # one helper call, no logic refactor.
+            sid = derive_discord_session_id(
+                getattr(message.guild, "id", "dm"),
+                getattr(message.channel, "id", 0),
+                getattr(message.author, "id", 0),
+            )
+
             payload = {
                 "model": "auto-agent",
                 "messages": [
                     {"role": "user", "content": message.content}
                 ],
-                "stream": False
+                "stream": False,
+                "session_id": sid,
             }
 
-            response = requests.post(PROXY_URL, json=payload, timeout=300)
+            response = requests.post(
+                PROXY_URL,
+                json=payload,
+                headers={"X-Session-Id": sid},
+                timeout=300,
+            )
 
             if response.status_code == 200:
                 data = response.json()

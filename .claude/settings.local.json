@@ -7,7 +7,15 @@
       "Bash(netstat -ano)",
       "Bash(findstr :11435)",
       "Bash(wc -l \"d:/Code/yolo/Claude_Code/LocalHelpBot/core/\"*.py)",
-      "Bash(xargs head:*)"
+      "Bash(xargs head:*)",
+      "Bash(d:/Code/yolo/Claude_Code/LocalHelpBot/venv/Scripts/python.exe -c \"import pypdf, reportlab; print\\('pypdf', pypdf.__version__\\); print\\('reportlab', reportlab.Version\\)\")",
+      "Bash(d:/Code/yolo/Claude_Code/LocalHelpBot/venv/Scripts/python.exe -c \"import sys; sys.path.insert\\(0,'d:/Code/yolo/Claude_Code/LocalHelpBot'\\); from core import proxy; print\\('proxy import OK'\\); print\\('CODE_MODEL =', proxy.CODE_MODEL\\); print\\('orchestrator tools:', sorted\\(t.name for t in proxy.orchestrator.registry\\)[:15]\\)\")",
+      "Bash(d:/Code/yolo/Claude_Code/LocalHelpBot/venv/Scripts/python.exe -c \"import sys; sys.path.insert\\(0,'d:/Code/yolo/Claude_Code/LocalHelpBot'\\); from core import proxy; names = sorted\\(t.name for t in proxy.orchestrator.registry\\); print\\('total:', len\\(names\\)\\); import json; print\\(json.dumps\\(names, indent=2\\)\\)\")",
+      "Bash(./venv/Scripts/python.exe -m core.proxy)",
+      "Bash(echo \"proxy started, pid=$!\")",
+      "Bash(./venv/Scripts/python.exe _test_pdf.py)",
+      "Bash(tee test_pdf_result.txt)",
+      "Read(//d/Code/yolo/source_claude/**)"
     ]
   }
 }

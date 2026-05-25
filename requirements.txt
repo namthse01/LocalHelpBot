@@ -1,0 +1,22 @@
+# LocalHelpBot — runtime requirements
+#
+# Core deps (always required)
+chromadb>=1.0
+requests>=2.32
+pydantic>=2.6              # typed config schema (Slice 4)
+rich>=13                   # colored logs + healthcheck (Slice 3 / 6)
+cryptography>=42           # DPAPI/Fernet secrets (core/secrets.py)
+tiktoken>=0.7              # RAG chunker token count
+langchain-text-splitters>=0.3
+langchain-community>=0.3
+
+# Discord gateway (optional — only needed if you use the Discord bot)
+discord.py>=2.7
+
+# Document tools (read_pdf / write_pdf / read_docx / write_docx)
+pypdf>=4.0
+python-docx>=1.0
+reportlab>=4.0
+
+# Process tools (better list_processes / kill_process)
+psutil>=5.9

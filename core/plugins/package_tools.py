@@ -1,18 +1,13 @@
-"""
-Dynamic self-extension: let the agent install Python packages it needs.
+"""Dynamic self-extension: let the agent install Python packages it needs.
 
 Flow:
   1. Agent hits a `ModuleNotFoundError` (surfaced by python_exec / run_command).
-  2. Agent calls install_package {"name": "pandas", "reason": "need dataframes for CSV stats"}.
-  3. request_permission() fires a modal that shows the package name + reason so
-     the user can see WHAT is being installed and WHY before approving.
-  4. On approval, we pip-install into the currently running interpreter's venv.
-  5. If the package exposes tools (has a `register_tools` entrypoint or a sibling
-     plugin module dropped by a post-install hook), they become available on the
-     next request. For simple libs, the agent just imports them via python_exec.
+  2. Agent calls install_package {"name": "pandas", "reason": "need dataframes"}.
+  3. request_permission() shows the package + reason for user approval.
+  4. On approval, we pip-install into the running interpreter's venv.
 
-This is intentionally narrow: we only pip-install from PyPI, one package per call,
-and there is no arbitrary-URL install path. That keeps the blast radius small.
+Narrow scope: PyPI only, one package per call, no arbitrary-URL install.
+Returns typed `ToolResult`.
 """
 from __future__ import annotations
 
@@ -23,10 +18,10 @@ import sys
 from typing import Any, Dict
 
 from core.permissions import request_permission
-from core.tool_schema import Tool, ToolRegistry
+from core.tool_schema import ErrorCode, Tool, ToolRegistry, ToolResult
 
-# Conservative validator: letters, digits, dot, dash, underscore, plus optional
-# PEP 440 version specifier. Blocks shell metacharacters, URLs, file paths.
+# Conservative validator: letters, digits, dot, dash, underscore, plus
+# optional PEP 440 version specifier. Blocks shell metas, URLs, paths.
 _PKG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:\[[A-Za-z0-9,._-]+\])?(?:[<>=!~]=?[A-Za-z0-9._*+-]+)?$")
 
 
@@ -39,17 +34,21 @@ def _check_already_installed(name: str) -> bool:
         return False
 
 
-def _install_package(args: Dict[str, Any]) -> str:
+def _install_package(args: Dict[str, Any]) -> ToolResult:
     name = (args.get("name") or "").strip()
     reason = (args.get("reason") or "").strip() or "(no reason given)"
     if not name:
-        return "ERROR: install_package requires 'name'."
+        return ToolResult.error(ErrorCode.INVALID_ARGS, "install_package requires 'name'.", retryable=False)
     if not _PKG_RE.match(name):
-        return (f"ERROR: package name {name!r} looks unsafe. "
-                "Only PyPI-style names are allowed (letters, digits, ._-, optional [extras] and version specifier).")
+        return ToolResult.error(
+            ErrorCode.INVALID_ARGS,
+            f"Package name {name!r} looks unsafe. "
+            "Only PyPI-style names allowed (letters, digits, ._-, optional [extras] and version).",
+            retryable=False,
+        )
 
     if _check_already_installed(name):
-        return f"OK: '{name}' already importable — no install needed."
+        return ToolResult.success(f"OK: '{name}' already importable — no install needed.", package=name, installed=False)
 
     decision = request_permission(
         "install_package", name,
@@ -61,7 +60,11 @@ def _install_package(args: Dict[str, Any]) -> str:
         },
     )
     if not decision["allowed"]:
-        return f"PERMISSION_DENIED: user declined install of '{name}' ({decision['reason']})."
+        return ToolResult.error(
+            ErrorCode.PERMISSION_DENIED,
+            f"User declined install of '{name}' ({decision['reason']}).",
+            retryable=False,
+        )
 
     try:
         result = subprocess.run(
@@ -72,14 +75,23 @@ def _install_package(args: Dict[str, Any]) -> str:
         tail_out = "\n".join(result.stdout.splitlines()[-20:])
         tail_err = "\n".join(result.stderr.splitlines()[-10:])
         if result.returncode != 0:
-            return f"ERROR: pip install failed (exit {result.returncode}).\nSTDERR:\n{tail_err}\nSTDOUT:\n{tail_out}"
-        # Invalidate import caches so fresh import works immediately.
+            return ToolResult.error(
+                ErrorCode.UNKNOWN,
+                f"pip install failed (exit {result.returncode}).\nSTDERR:\n{tail_err}\nSTDOUT:\n{tail_out}",
+                hint="Inspect STDERR — wrong name, network issue, or conflicting deps.",
+                package=name,
+                exit_code=result.returncode,
+            )
         importlib.invalidate_caches()
-        return f"OK: installed '{name}'. Last lines of pip output:\n{tail_out}"
+        return ToolResult.success(
+            f"OK: installed '{name}'. Last lines of pip output:\n{tail_out}",
+            package=name,
+            installed=True,
+        )
     except subprocess.TimeoutExpired:
-        return "ERROR: pip install timed out (300s)."
-    except Exception as e:
-        return f"ERROR: {e}"
+        return ToolResult.error(ErrorCode.EXTERNAL_TIMEOUT, "pip install timed out (300s).")
+    except Exception as e:  # noqa: BLE001
+        return ToolResult.error(ErrorCode.UNKNOWN, f"install_package failed: {e}")
 
 
 def register(registry: ToolRegistry) -> None:
@@ -94,9 +106,9 @@ def register(registry: ToolRegistry) -> None:
             "type": "object",
             "properties": {
                 "name": {"type": "string",
-                         "description": "PyPI package name, optional [extras] and version (e.g. 'requests', 'pandas>=2', 'uvicorn[standard]')"},
+                         "description": "PyPI name, optional [extras] and version (e.g. 'requests', 'pandas>=2')"},
                 "reason": {"type": "string",
-                           "description": "Why this package is needed (shown to the user in the approval modal)"},
+                           "description": "Why this package is needed (shown to user in approval modal)"},
             },
             "required": ["name", "reason"],
         },

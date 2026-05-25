@@ -1,59 +1,63 @@
 # ═══════════════════════════════════════════════════════════════
-#  config.py — Cấu hình model duy nhất cho toàn bộ hệ thống
+#  config.py — single source of truth for LocalHelpBot.
 #
-#  Khi clone về máy mới, chỉ cần sửa file này.
-#  Chạy `ollama list` để xem model đang có trên máy.
+#  Edit the values below to point at your Ollama models, API keys,
+#  Discord wiring, and agent profiles. The schema in
+#  `core/config_schema.py` validates everything at import time; a
+#  typo (e.g. `"toolss"` instead of `"tools"`) will refuse to start
+#  the proxy with a pointed error message instead of failing deep
+#  in the agent loop later.
+#
+#  `runtime_overrides.json` (created by the UI's "Apply Mode Changes"
+#  button) is merged on top of the values here at startup.
 # ═══════════════════════════════════════════════════════════════
 import os
-import os
+from pathlib import Path
 
-# ── Ollama endpoint ──────────────────────────────────────────
+# ── Ollama endpoint ──────────────────────────────────────────────
 OLLAMA_BASE = "http://localhost:11434"
 
-# ── Model chat chính — dùng cho tất cả agents ───────────────
-# Gợi ý theo RAM:
-#   RAM  8GB → "llama3.2:3b"  hoặc "qwen2.5:7b"
-#   RAM 16GB → "qwen3.5"      hoặc "qwen2.5-coder:7b"
-#   RAM 32GB+ / GPU → "glm-4.7-flash" hoặc model lớn hơn
+# ── Model chat chính — dùng cho tất cả agents ───────────────────
+#   RAM  8GB → "llama3.2:3b"  / "qwen2.5:7b"
+#   RAM 16GB → "qwen3.5"      / "qwen2.5-coder:7b"
+#   RAM 32GB+ / GPU → "glm-4.7-flash" hoặc lớn hơn
 CHAT_MODEL = "qwen3.5:latest"
 
-# ── Model lớn — dùng cho deep-agent (tác vụ suy luận phức tạp)
-# Để trống ("") nếu máy không đủ RAM / không có model lớn
+# ── Model lớn — dùng cho deep-agent (suy luận phức tạp) ─────────
+# Leave "" if your machine cannot host a large model.
 LARGE_MODEL = "glm-4.7-flash:latest"
 
-# ── Model embedding — dùng cho ChromaDB RAG ─────────────────
-# Luôn dùng mxbai-embed-large nếu có (chất lượng tốt nhất, chỉ 669MB)
-# Thay thế: "nomic-embed-text" hoặc "all-minilm"
+# ── Model embedding — RAG vector store ─────────────────────────
+# mxbai-embed-large is the recommended default (1024-dim, 669MB).
+# Changing this requires re-embedding cad_db/ from scratch.
 EMBED_MODEL = "mxbai-embed-large:latest"
 
-# ── Port của proxy ───────────────────────────────────────────
+# ── Port of the proxy ──────────────────────────────────────────
 PROXY_PORT = 11435
 
-# ── Model Provider Configuration ─────────────────────────────
-# Your API keys and preferred models
-# If an API key is provided, the system will try this provider first.
-# If tokens are exhausted or an error occurs, it will automatically fall back to Local (Ollama).
+# ── Model Provider Configuration ───────────────────────────────
+# Primary is tried first; on token-exhaust / error / 401 we fall
+# back to the local provider.
 MODEL_PROVIDERS = {
     "primary": {
         "type": "api",
-        "provider": "anthropic", # "anthropic", "openai", "google"
+        "provider": "anthropic",  # "anthropic" | "openai" | "google"
         "api_key": os.getenv("ANTHROPIC_API_KEY", "YOUR_ANTHROPIC_API_KEY"),
         "model": "claude-3-5-sonnet-20240620",
     },
     "fallback": {
         "type": "local",
         "provider": "ollama",
-        "model": "qwen3.5:latest", # Fallback to this local model
-    }
+        "model": "qwen3.5:latest",
+    },
 }
 
-# To disable API and use local only, set primary type to "local"
-# MODEL_PROVIDERS["primary"]["type"] = "local"
-
-# Use environment variable if available, otherwise fallback to hardcoded token
+# Discord token. Prefer env var; the hardcoded fallback is kept for
+# convenience but never commit a real token here.
 DISCORD_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "MTQ4NTIzODMyMTU0MTI4MzkwMQ.GytimM.iPNSuHmnvasBuaerx8z4gi-zk3Jj_l64bJJcuY")
 
-# Flexible Discord Configuration
+# Per-guild allow-list. Add a guild id with its channel list to allow
+# the bot to respond there.
 DISCORD_SETTINGS = {
     "guilds": {
         1436893849518866543: {
@@ -62,7 +66,7 @@ DISCORD_SETTINGS = {
                 1486028541060583535,
                 1486028596370997399,
                 1486028655208567019,
-                1486352473018077394
+                1486352473018077394,
             ],
             "admin_role_id": None,
         }
@@ -71,12 +75,11 @@ DISCORD_SETTINGS = {
     "allow_all_channels": False,
 }
 
-# Keep old variables for backward compatibility if needed, but map them to DISCORD_SETTINGS
+# Back-compat aliases — kept because various modules still import them.
 DISCORD_SERVER_ID = DISCORD_SETTINGS["default_guild_id"]
 ALLOWED_CHANNELS = DISCORD_SETTINGS["guilds"].get(DISCORD_SERVER_ID, {}).get("allowed_channels", [])
 
-# ── Agents Configuration ──────────────────────────────────────
-# Define different specialists with their own system prompts and toolsets
+# ── Agent profiles ─────────────────────────────────────────────
 AGENT_PROFILES = {
     "main": {
         "description": (
@@ -109,7 +112,16 @@ AGENT_PROFILES = {
             "  • Read the <tool_result is_error=\"true\"> body + hint carefully.\n"
             "  • Fix the root cause (wrong path? missing dep? stale old_string?) or\n"
             "    switch to a different tool. State the revised step in 1 line before\n"
-            "    emitting the next tool_use.\n\n"
+            "    emitting the next tool_use.\n"
+            "  • After 2 failures of the SAME call, Stop-the-Line fires — the loop refuses\n"
+            "    the 3rd attempt. You MUST change at least one argument or pick another tool.\n\n"
+            "FOLLOW-UP TURNS — use your own prior messages as memory:\n"
+            "  When the user says 'the file you just made / wrote / created', 'add to\n"
+            "  that file', 'the result above', etc., the path / content / result IS in\n"
+            "  your prior assistant messages in this conversation. READ them — do NOT\n"
+            "  reply with 'I don't have context' or ask which file. Extract the path\n"
+            "  from your prior reply and act (edit_file / read_file / etc). Only ask\n"
+            "  if the prior messages genuinely have no such reference.\n\n"
             "FILE-TYPE ROUTING:\n"
             "  • .pdf → read_pdf / write_pdf   • .docx → read_docx / write_docx\n"
             "  • .py/.cs/.js/.ts/.md/.txt/.json/.yml → read_file / write_file / edit_file\n"
@@ -128,15 +140,15 @@ AGENT_PROFILES = {
         ),
         "model": "qwen3.5:latest",
         "tools": [
-            "task", "search_web", "fetch_url",
+            "task", "search_web", "fetch_url", "query_rag",
             "read_file", "list_dir", "grep_file", "glob_files",
             "write_file", "edit_file", "run_command",
-            # v3 plugins (core/plugins/*)
             "delete_file", "make_dir", "move_file",
             "python_exec", "list_processes", "kill_process",
             "install_package",
             "read_file_chunk", "read_pdf", "write_pdf", "read_docx", "write_docx",
-        ]
+        ],
+        "verify": "off",  # Slice 5 enables CoVe wrapper when set to "high"
     },
     "researcher": {
         "description": (
@@ -144,9 +156,14 @@ AGENT_PROFILES = {
             "task needs reading/comparing 3+ web sources or RAG docs and citing them. "
             "NOT for single-URL lookups (main handles those)."
         ),
-        "system_prompt": "You are a Deep Research Specialist. Use RAG tools to find exhaustive information. Be thorough and cite sources.",
+        "system_prompt": (
+            "You are a Deep Research Specialist. Use `query_rag` against the local "
+            "corpus first; if it returns NO_DATA or scores are weak, fall back to "
+            "`search_web` + `fetch_url`. Cite every fact with its source."
+        ),
         "model": "glm-4.7-flash:latest",
-        "tools": ["read_file", "list_dir", "search_web"]
+        "tools": ["read_file", "list_dir", "search_web", "fetch_url", "query_rag"],
+        "verify": "off",
     },
     "coder": {
         "description": (
@@ -156,7 +173,8 @@ AGENT_PROFILES = {
         ),
         "system_prompt": "You are a Code Analysis Specialist. Focus on implementation details, patterns, and bug hunting.",
         "model": "qwen3.5:latest",
-        "tools": ["read_file", "list_dir", "search_web"]
+        "tools": ["read_file", "list_dir", "search_web"],
+        "verify": "off",
     },
     "summarizer": {
         "description": (
@@ -165,40 +183,49 @@ AGENT_PROFILES = {
         ),
         "system_prompt": "You are a Summary Specialist. Take complex information and turn it into a concise, bulleted summary for Discord.",
         "model": "qwen3.5:latest",
-        "tools": []
-    }
+        "tools": [],
+        "verify": "off",
+    },
 }
 
-# ── Automation Tasks ────────────────────────────────────────────
-# Daily/Repeated tasks. Format: { "id": "name", "schedule": "HH:MM", "prompt": "...", "recipient": "channel_id" }
+# ── Automation tasks ───────────────────────────────────────────
 AUTOMATION_TASKS = [
     {
         "id": "daily_summary",
-        "schedule": "08:00", # 8 AM
+        "schedule": "08:00",
         "prompt": "Summarize the most important documents added to the RAG system in the last 24 hours.",
-        "recipient": 1436893850139496673, # Target Discord channel
+        "recipient": 1436893850139496673,
     },
     {
         "id": "system_health_check",
-        "schedule": "12:00", # Noon
+        "schedule": "12:00",
         "prompt": "Check the local system logs for any critical errors in LocalHelpBot and report them.",
         "recipient": 1436893850139496673,
-    }
+    },
 ]
 
-# ── Runtime overrides ───────────────────────────────────────────
-# If runtime_overrides.json exists next to config.py, it replaces matching keys
-# (MODEL_PROVIDERS, AGENT_PROFILES, DISCORD_SETTINGS, AUTOMATION_TASKS) in memory.
-# The UI "Apply Mode Changes" button writes to that file.
+
+# ═════════════════════════════════════════════════════════════════
+# Runtime override merge + validation
+# ═════════════════════════════════════════════════════════════════
+#
+# Everything above is the static defaults. The UI / Discord adapter
+# can persist runtime tweaks to `runtime_overrides.json` (encrypted
+# api_keys, edited prompts, etc.). We merge that file in here and
+# then run the whole tree through the pydantic schema in
+# `core/config_schema.py` — typos blow up at import time instead of
+# at the first specialist invocation.
 import json as _json
-_OVERRIDES_PATH = os.path.join(os.path.dirname(__file__), "runtime_overrides.json")
-if os.path.exists(_OVERRIDES_PATH):
+
+_OVERRIDES_PATH = Path(__file__).parent / "runtime_overrides.json"
+
+if _OVERRIDES_PATH.exists():
     try:
-        with open(_OVERRIDES_PATH, "r", encoding="utf-8") as _f:
+        with _OVERRIDES_PATH.open("r", encoding="utf-8") as _f:
             _ov = _json.load(_f)
         if "providers" in _ov:
             MODEL_PROVIDERS = _ov["providers"]
-            # Decrypt api_key fields in-memory (they are stored encrypted on disk)
+            # Decrypt api_key fields in-memory (stored encrypted on disk).
             try:
                 from core.secrets import decrypt_secret as _dec
                 for _slot in ("primary", "fallback"):
@@ -215,3 +242,37 @@ if os.path.exists(_OVERRIDES_PATH):
             AUTOMATION_TASKS = _ov["tasks"]
     except Exception as _e:
         print(f"[config] Failed to load runtime_overrides.json: {_e}")
+
+# Validate (the schema's pretty-printer prints + raises SystemExit on
+# failure). We don't *keep* the RootConfig instance around — the
+# legacy dicts above are the source-of-truth for the rest of the
+# codebase. But running validation here makes typos fail loudly.
+try:
+    from core.config_schema import RootConfig, pretty_print_validation_error
+    from pydantic import ValidationError as _VE
+
+    _CONFIG_VIEW = {
+        "ollama_base": OLLAMA_BASE,
+        "chat_model": CHAT_MODEL,
+        "large_model": LARGE_MODEL,
+        "embed_model": EMBED_MODEL,
+        "proxy_port": PROXY_PORT,
+        "providers": MODEL_PROVIDERS,
+        "discord_token": DISCORD_TOKEN,
+        "discord": DISCORD_SETTINGS,
+        "agents": AGENT_PROFILES,
+        "tasks": AUTOMATION_TASKS,
+    }
+    try:
+        CONFIG = RootConfig.model_validate(_CONFIG_VIEW)
+    except _VE as _e:
+        pretty_print_validation_error(_e)
+        raise SystemExit(1)
+except SystemExit:
+    raise
+except Exception as _e:
+    # Schema module itself broke (rare). Don't kill the proxy over
+    # that — just emit a console warning and keep going with the
+    # un-validated dicts so the dev can debug.
+    print(f"[config] schema validation skipped (non-fatal): {_e}")
+    CONFIG = None

@@ -1,43 +1,42 @@
-"""
-Document-format tools.
+"""Document-format tools — text chunks, PDF, DOCX.
 
 Text:
-  read_file_chunk  — read arbitrarily large text files by byte offset / line range.
-                     Works for .py, .cs, .js, .ts, .md, logs — any UTF-8 text.
+  read_file_chunk  — read large text files by byte offset or line range.
 
 PDF (needs `pypdf`):
-  read_pdf         — extract text from a PDF, optional page range.
+  read_pdf         — extract text, optional page range.
   write_pdf        — create a simple text PDF (via `reportlab`).
 
 DOCX (needs `python-docx`):
-  read_docx        — extract text from a .docx.
+  read_docx        — extract text.
   write_docx       — create a .docx from plain text (paragraph per line).
 
-If the optional library is missing, the tool returns an ERROR with a clear
-hint to call `install_package` — the agent's recovery-hint layer will pick it
-up automatically.
+When an optional library is missing, the tool returns a typed
+`ToolResult` with hint="call install_package …" — the agent loop's
+recovery hint surfaces this verbatim.
 """
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from core.permissions import request_permission
-from core.tool_schema import Tool, ToolRegistry
+from core.tool_schema import ErrorCode, Tool, ToolRegistry, ToolResult
 
 
 # ──────────────────────────────────────────
 #  Big text file reader
 # ──────────────────────────────────────────
 
-def _read_file_chunk(args: Dict[str, Any]) -> str:
+
+def _read_file_chunk(args: Dict[str, Any]) -> ToolResult:
     path = args.get("path")
     if not path:
-        return "ERROR: read_file_chunk requires 'path'."
+        return ToolResult.error(ErrorCode.INVALID_ARGS, "read_file_chunk requires 'path'.", retryable=False)
     mode = (args.get("mode") or "lines").lower()
     p = Path(path)
     if not p.exists():
-        return f"ERROR: File not found: {path}"
+        return ToolResult.error(ErrorCode.FILE_NOT_FOUND, f"File not found: {path}")
     try:
         if mode == "bytes":
             offset = int(args.get("offset", 0))
@@ -47,7 +46,8 @@ def _read_file_chunk(args: Dict[str, Any]) -> str:
                 data = f.read(limit)
             text = data.decode("utf-8", errors="replace")
             total = p.stat().st_size
-            return (f"[{path} bytes {offset}..{offset + len(data)} / {total}]\n{text}")
+            body = f"[{path} bytes {offset}..{offset + len(data)} / {total}]\n{text}"
+            return ToolResult.success(body, path=str(p), bytes_read=len(data), total=total)
         # default: line mode
         start = int(args.get("start", 1))
         count = int(args.get("count", 500))
@@ -59,37 +59,42 @@ def _read_file_chunk(args: Dict[str, Any]) -> str:
                 if i < start:
                     continue
                 if i >= start + count:
-                    # keep counting total
                     continue
                 lines.append(f"{i:6d}: {line.rstrip()}")
         body = "\n".join(lines) if lines else "(no lines in range)"
         end = min(start + count - 1, total)
-        return f"[{path} lines {start}..{end} of {total}]\n{body}"
-    except Exception as e:
-        return f"ERROR: {e}"
+        return ToolResult.success(
+            f"[{path} lines {start}..{end} of {total}]\n{body}",
+            path=str(p), start=start, end=end, total_lines=total,
+        )
+    except Exception as e:  # noqa: BLE001
+        return ToolResult.error(ErrorCode.UNKNOWN, f"read_file_chunk failed: {e}")
 
 
 # ──────────────────────────────────────────
 #  PDF
 # ──────────────────────────────────────────
 
-def _import_or_hint(module: str, package: str, purpose: str):
+
+def _import_or_hint(module: str, package: str, purpose: str) -> Tuple[Optional[Any], Optional[ToolResult]]:
     try:
         return __import__(module), None
     except ImportError:
-        hint = (f"ERROR: ModuleNotFoundError: No module named '{module}'. "
-                f"Call install_package with name=\"{package}\" and "
-                f"reason=\"{purpose}\" to add it.")
-        return None, hint
+        return None, ToolResult.error(
+            ErrorCode.INVALID_ARGS,
+            f"ModuleNotFoundError: No module named '{module}'.",
+            hint=f"Call install_package with name=\"{package}\" and reason=\"{purpose}\".",
+            retryable=False,
+        )
 
 
-def _read_pdf(args: Dict[str, Any]) -> str:
+def _read_pdf(args: Dict[str, Any]) -> ToolResult:
     path = args.get("path")
     if not path:
-        return "ERROR: read_pdf requires 'path'."
+        return ToolResult.error(ErrorCode.INVALID_ARGS, "read_pdf requires 'path'.", retryable=False)
     p = Path(path)
     if not p.exists():
-        return f"ERROR: File not found: {path}"
+        return ToolResult.error(ErrorCode.FILE_NOT_FOUND, f"File not found: {path}")
     pypdf, err = _import_or_hint("pypdf", "pypdf", "read PDF files")
     if err:
         return err
@@ -98,7 +103,6 @@ def _read_pdf(args: Dict[str, Any]) -> str:
         n = len(reader.pages)
         pages_arg = args.get("pages")
         if pages_arg:
-            # "1-3" or "2,5,7" or "1-3,7"
             wanted = set()
             for part in str(pages_arg).split(","):
                 part = part.strip()
@@ -109,7 +113,7 @@ def _read_pdf(args: Dict[str, Any]) -> str:
                     wanted.add(int(part))
             idxs = sorted(i for i in wanted if 1 <= i <= n)
         else:
-            idxs = list(range(1, min(n, 20) + 1))  # default: first 20 pages
+            idxs = list(range(1, min(n, 20) + 1))
         out = [f"[PDF {path}: {n} pages, showing {len(idxs)}]"]
         for i in idxs:
             try:
@@ -117,24 +121,27 @@ def _read_pdf(args: Dict[str, Any]) -> str:
             except Exception as e:
                 text = f"(extract failed: {e})"
             out.append(f"\n--- page {i} ---\n{text}")
-        return "\n".join(out)
-    except Exception as e:
-        return f"ERROR: {e}"
+        return ToolResult.success("\n".join(out), path=str(p), pages=n, shown=len(idxs))
+    except Exception as e:  # noqa: BLE001
+        return ToolResult.error(ErrorCode.UNKNOWN, f"read_pdf failed: {e}")
 
 
-def _write_pdf(args: Dict[str, Any]) -> str:
+def _write_pdf(args: Dict[str, Any]) -> ToolResult:
     path = args.get("path")
     content = args.get("content", "")
     if not path:
-        return "ERROR: write_pdf requires 'path'."
+        return ToolResult.error(ErrorCode.INVALID_ARGS, "write_pdf requires 'path'.", retryable=False)
     decision = request_permission(
         "write_pdf", path,
         {"path": path, "chars": len(content), "preview": content[:300]},
     )
     if not decision["allowed"]:
-        return f"PERMISSION_DENIED: user declined write_pdf ({decision['reason']})."
+        return ToolResult.error(
+            ErrorCode.PERMISSION_DENIED,
+            f"User declined write_pdf ({decision['reason']}).",
+            retryable=False,
+        )
 
-    # Prefer reportlab (true PDF). Fall back to hint.
     rl, err = _import_or_hint("reportlab", "reportlab", "generate PDF files")
     if err:
         return err
@@ -151,7 +158,6 @@ def _write_pdf(args: Dict[str, Any]) -> str:
         line_h = 14
         c.setFont("Helvetica", 10)
         for raw_line in content.splitlines() or [""]:
-            # simple word-wrap to page width
             max_chars = 95
             while len(raw_line) > max_chars:
                 c.drawString(margin, y, raw_line[:max_chars])
@@ -168,22 +174,27 @@ def _write_pdf(args: Dict[str, Any]) -> str:
                 c.setFont("Helvetica", 10)
                 y = height - margin
         c.save()
-        return f"OK: wrote PDF {path} ({len(content)} chars)"
-    except Exception as e:
-        return f"ERROR: {e}"
+        return ToolResult.success(
+            f"OK: wrote PDF {path} ({len(content)} chars)",
+            path=str(p), bytes_written=len(content),
+            files_touched=[str(p)],
+        )
+    except Exception as e:  # noqa: BLE001
+        return ToolResult.error(ErrorCode.UNKNOWN, f"write_pdf failed: {e}")
 
 
 # ──────────────────────────────────────────
 #  DOCX
 # ──────────────────────────────────────────
 
-def _read_docx(args: Dict[str, Any]) -> str:
+
+def _read_docx(args: Dict[str, Any]) -> ToolResult:
     path = args.get("path")
     if not path:
-        return "ERROR: read_docx requires 'path'."
+        return ToolResult.error(ErrorCode.INVALID_ARGS, "read_docx requires 'path'.", retryable=False)
     p = Path(path)
     if not p.exists():
-        return f"ERROR: File not found: {path}"
+        return ToolResult.error(ErrorCode.FILE_NOT_FOUND, f"File not found: {path}")
     docx, err = _import_or_hint("docx", "python-docx", "read Word .docx files")
     if err:
         return err
@@ -193,22 +204,29 @@ def _read_docx(args: Dict[str, Any]) -> str:
         text = "\n".join(paras)
         if len(text) > 60_000:
             text = text[:60_000] + "\n... [truncated]"
-        return f"[DOCX {path}: {len(paras)} paragraphs]\n{text}"
-    except Exception as e:
-        return f"ERROR: {e}"
+        return ToolResult.success(
+            f"[DOCX {path}: {len(paras)} paragraphs]\n{text}",
+            path=str(p), paragraphs=len(paras),
+        )
+    except Exception as e:  # noqa: BLE001
+        return ToolResult.error(ErrorCode.UNKNOWN, f"read_docx failed: {e}")
 
 
-def _write_docx(args: Dict[str, Any]) -> str:
+def _write_docx(args: Dict[str, Any]) -> ToolResult:
     path = args.get("path")
     content = args.get("content", "")
     if not path:
-        return "ERROR: write_docx requires 'path'."
+        return ToolResult.error(ErrorCode.INVALID_ARGS, "write_docx requires 'path'.", retryable=False)
     decision = request_permission(
         "write_docx", path,
         {"path": path, "chars": len(content), "preview": content[:300]},
     )
     if not decision["allowed"]:
-        return f"PERMISSION_DENIED: user declined write_docx ({decision['reason']})."
+        return ToolResult.error(
+            ErrorCode.PERMISSION_DENIED,
+            f"User declined write_docx ({decision['reason']}).",
+            retryable=False,
+        )
     docx, err = _import_or_hint("docx", "python-docx", "write Word .docx files")
     if err:
         return err
@@ -219,23 +237,27 @@ def _write_docx(args: Dict[str, Any]) -> str:
         for line in content.splitlines() or [""]:
             d.add_paragraph(line)
         d.save(str(p))
-        return f"OK: wrote DOCX {path} ({len(content)} chars, {content.count(chr(10))+1} paragraphs)"
-    except Exception as e:
-        return f"ERROR: {e}"
+        n_paras = content.count("\n") + 1
+        return ToolResult.success(
+            f"OK: wrote DOCX {path} ({len(content)} chars, {n_paras} paragraphs)",
+            path=str(p), bytes_written=len(content), paragraphs=n_paras,
+            files_touched=[str(p)],
+        )
+    except Exception as e:  # noqa: BLE001
+        return ToolResult.error(ErrorCode.UNKNOWN, f"write_docx failed: {e}")
 
 
 # ──────────────────────────────────────────
 #  Register
 # ──────────────────────────────────────────
 
+
 def register(registry: ToolRegistry) -> None:
     registry.register(Tool(
         name="read_file_chunk",
         description=(
-            "Read a portion of a large text file. "
-            "mode='lines' (default): uses start/count. "
-            "mode='bytes': uses offset/limit. "
-            "Works for any UTF-8 text (.py, .cs, .js, .ts, .md, logs, ...)."
+            "Read a portion of a large text file. mode='lines' (default) uses "
+            "start/count; mode='bytes' uses offset/limit."
         ),
         input_schema={
             "type": "object",
@@ -256,7 +278,7 @@ def register(registry: ToolRegistry) -> None:
         name="read_pdf",
         description=(
             "Extract text from a PDF. Optional 'pages' like '1-3' or '2,5,7'. "
-            "Default: first 20 pages. Requires `pypdf` (install via install_package if missing)."
+            "Default: first 20 pages. Requires `pypdf`."
         ),
         input_schema={
             "type": "object",
@@ -273,7 +295,7 @@ def register(registry: ToolRegistry) -> None:
         name="write_pdf",
         description=(
             "Create a text PDF (uses reportlab). Asks user permission. "
-            "Requires `reportlab` — agent should install_package if missing."
+            "Requires `reportlab`."
         ),
         input_schema={
             "type": "object",

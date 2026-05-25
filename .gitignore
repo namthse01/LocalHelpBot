@@ -26,6 +26,15 @@ dist/
 
 # Log files
 *.log
+*.log.jsonl
+proxy.log.jsonl
+
+# Per-session memory logs (written by core/conversation_store.py)
+data/sessions/
+
+# Scratch / test output
+test_pdf_result.txt
+_slice*_verify.py
 
 # OS files
 .DS_Store

@@ -11,8 +11,18 @@
       "Bash(echo \"log content\")",
       "Bash(rm -f debug.log)",
       "Bash(PYTHONIOENCODING=utf-8 python -)",
-      "PowerShell($j = Start-Job -ScriptBlock { Set-Location \"d:\\\\Code\\\\yolo\\\\Claude_Code\\\\LocalHelpBot\"; .\\\\venv\\\\Scripts\\\\python.exe -m core.proxy 2>&1 }; Start-Sleep -Seconds 4; try { $tools = \\(Invoke-WebRequest -Uri \"http://localhost:11435/api/tags\" -UseBasicParsing -TimeoutSec 5\\).Content | ConvertFrom-Json; $tools.models | Where-Object { $_.size -eq 0 } | Select-Object name | Format-Table -AutoSize } catch { Write-Host \"FAIL: $_\" }; Stop-Job $j; Remove-Job $j -Force)",
-      "PowerShell(venv\\\\Scripts\\\\python.exe -m pytest tests/ -q 2>&1)"
+      "PowerShell($j = Start-Job -ScriptBlock { Set-Location \"d:\\\\Code\\\\yolo\\\\Claude_Code\\\\TheAgent0\"; .\\\\venv\\\\Scripts\\\\python.exe -m core.proxy 2>&1 }; Start-Sleep -Seconds 4; try { $tools = \\(Invoke-WebRequest -Uri \"http://localhost:11435/api/tags\" -UseBasicParsing -TimeoutSec 5\\).Content | ConvertFrom-Json; $tools.models | Where-Object { $_.size -eq 0 } | Select-Object name | Format-Table -AutoSize } catch { Write-Host \"FAIL: $_\" }; Stop-Job $j; Remove-Job $j -Force)",
+      "PowerShell(venv\\\\Scripts\\\\python.exe -m pytest tests/ -q 2>&1)",
+      "Bash(Get-ChildItem -Recurse -Depth 3)",
+      "Bash(Select-Object FullName, PSIsContainer)",
+      "Bash(Get-ChildItem -Path \"d:\\\\Code\\\\yolo\\\\Claude_Code\\\\TheAgent0\" -Recurse -Name)",
+      "Bash(xargs wc -l)",
+      "PowerShell(Rename-Item -Path \"d:\\\\Code\\\\yolo\\\\Claude_Code\\\\LocalHelpBot\\\\HelpBotUI\" -NewName \"TheAgent0UI\"; Rename-Item -Path \"d:\\\\Code\\\\yolo\\\\Claude_Code\\\\LocalHelpBot\\\\start_localhelpbot.bat\" -NewName \"start_theagent0.bat\"; Write-Output \"Renamed both.\"; Get-ChildItem -Path \"d:\\\\Code\\\\yolo\\\\Claude_Code\\\\LocalHelpBot\" -Name | Where-Object { $_ -match \"\\(?i\\)theagent0|helpbotui|localhelpbot\" })",
+      "PowerShell($env:PYTHONIOENCODING=\"utf-8\"; .\\\\venv\\\\Scripts\\\\python.exe -c \"from config import AGENT_PROFILES; p=AGENT_PROFILES['main']['system_prompt']; assert 'TheAgent0' in p, 'TheAgent0 not in persona'; assert 'LocalHelpBot' not in p, 'LocalHelpBot leaked in persona'; assert 'WHEN A TOOL FAILS' in p, 'Workflow rules destroyed'; assert 'revise the plan' in p, 'Revise section gone'; print\\('persona OK, len=' + str\\(len\\(p\\)\\)\\)\")",
+      "PowerShell(Set-Location \"d:\\\\Code\\\\yolo\\\\Claude_Code\"; try { Rename-Item -Path \"LocalHelpBot\" -NewName \"TheAgent0\" -ErrorAction Stop; Write-Output \"RENAMED OK\"; Get-ChildItem -Name | Where-Object { $_ -match \"\\(?i\\)theagent0|localhelpbot\" } } catch { Write-Output \"RENAME FAILED: $\\($_.Exception.Message\\)\" })"
+    ],
+    "additionalDirectories": [
+      "d:\\Code\\yolo\\Claude_Code"
     ]
   }
 }

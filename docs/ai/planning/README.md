@@ -11,7 +11,7 @@ description: Break down work into actionable tasks and estimate timeline
 - [x] **M1 — v1 core**: proxy + orchestrator + single agent + Ollama only.
 - [x] **M2 — v1.5 RAG + Discord**: ChromaDB indexer, Discord gateway, MCP server.
 - [x] **M3 — v2 upgrade (2026-04)**: ported claude-code patterns — structured `<tool_use>` blocks, parallel tool calls per turn, `Tool` schema registry ([core/tool_schema.py](../../../core/tool_schema.py)), environment + tool-catalog injection ([core/context.py](../../../core/context.py)), real **Task sub-agent** tool (thay `delegate` ad-hoc). Legacy `ACTION: {...}` vẫn parse back-compat.
-- [x] **M4 — Packaging**: one-file build qua [build_exe.py](../../../build_exe.py) → `dist/LocalHelpBot.exe`; [start_localhelpbot.bat](../../../start_localhelpbot.bat) chạy exe nếu có, fallback dev venv.
+- [x] **M4 — Packaging**: one-file build qua [build_exe.py](../../../build_exe.py) → `dist/TheAgent0.exe`; [start_theagent0.bat](../../../start_theagent0.bat) chạy exe nếu có, fallback dev venv.
 - [ ] **M5 — Linux/Mac parity**: script `.sh` tương đương, test Fernet path end-to-end.
 - [ ] **M6 — Agent self-improve**: cải thiện memory loop (bot "stupid in memory" — ghi chú trong commit `38658a8`).
 - [ ] **M7 — Plugin marketplace**: signed plugin loader, versioning.

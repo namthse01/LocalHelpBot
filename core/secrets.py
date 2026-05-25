@@ -78,7 +78,7 @@ def encrypt_secret(plaintext: str) -> str:
         return plaintext
     if _dpapi_available():
         import win32crypt
-        blob = win32crypt.CryptProtectData(plaintext.encode("utf-8"), "LocalHelpBot", None, None, None, 0)
+        blob = win32crypt.CryptProtectData(plaintext.encode("utf-8"), "TheAgent0", None, None, None, 0)
         return MARKER + base64.b64encode(blob).decode("ascii")
     token = _fernet().encrypt(plaintext.encode("utf-8"))
     return MARKER + base64.b64encode(token).decode("ascii")

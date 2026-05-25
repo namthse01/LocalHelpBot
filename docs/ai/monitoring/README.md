@@ -36,7 +36,7 @@ description: Define monitoring strategy, metrics, alerts, and incident response
 ## Logging Strategy
 
 - **Files**: `proxy.log`, `gateway.log` ở root (gitignored).
-- **Levels**: INFO mặc định, DEBUG khi bật env `LOCALHELPBOT_DEBUG=1`.
+- **Levels**: INFO mặc định, DEBUG khi bật env `THEAGENT0_DEBUG=1`.
 - **Format**: timestamp + component tag + message, vd `[proxy] POST /api/chat model=auto-agent ms=412`.
 - **Retention**: append, rotate manual (chưa tự rotate).
 - **Sensitive data**: API key **không bao giờ** log — mask trước khi print. Prompt user có thể log DEBUG, tránh ở INFO nếu chứa PII.

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LocalHelpBot | AI Command Center</title>
+    <title>TheAgent0 | AI Command Center</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <!-- v4 Slice 1: markdown rendering + syntax highlighting via CDN -->
@@ -96,7 +96,7 @@
             <div class="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center">
                 <i class="fas fa-robot text-white"></i>
             </div>
-            <h1 class="font-bold text-lg tracking-tight text-slate-200">LocalHelpBot</h1>
+            <h1 class="font-bold text-lg tracking-tight text-slate-200">TheAgent0</h1>
         </div>
 
         <div class="flex items-center gap-1 bg-slate-800 p-1 rounded-xl border border-slate-700">
@@ -124,7 +124,7 @@
             <span id="status-indicator" class="text-xs text-slate-500 flex items-center gap-1">
                 <span class="w-2 h-2 bg-green-500 rounded-full"></span> Online
             </span>
-            <button onclick="shutdownAll()" title="Shutdown LocalHelpBot" class="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-red-400 hover:bg-red-400/10 transition-all">
+            <button onclick="shutdownAll()" title="Shutdown TheAgent0" class="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-red-400 hover:bg-red-400/10 transition-all">
                 <i class="fas fa-power-off"></i>
             </button>
         </div>
@@ -404,7 +404,7 @@
     </div>
 
     <script>
-        console.log("LocalHelpBot UI Initializing...");
+        console.log("TheAgent0 UI Initializing...");
 
         let currentModel = 'auto-agent';
         let configState = { agents: {}, discord: {}, tasks: [], providers: {} };
@@ -1211,7 +1211,7 @@
         }
 
         function init() {
-            console.log("Initializing LocalHelpBot UI...");
+            console.log("Initializing TheAgent0 UI...");
             const sendBtn = $id('send-btn');
             if (sendBtn) sendBtn.addEventListener('click', sendMessage);
             const userInput = $id('user-input');
@@ -1407,11 +1407,11 @@
         window.addEventListener('beforeunload', signalClosing);
 
         async function shutdownAll() {
-            if (!confirm('Shutdown LocalHelpBot? All services (Proxy, Discord...) will stop.')) return;
+            if (!confirm('Shutdown TheAgent0? All services (Proxy, Discord...) will stop.')) return;
             try {
                 await fetch('/api/shutdown', { method: 'POST' });
             } catch (e) { /* server is shutting down */ }
-            document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column;gap:16px"><i class="fas fa-power-off" style="font-size:48px;color:#475569"></i><h2 style="color:#94a3b8;font-size:20px">LocalHelpBot has been shut down</h2><p style="color:#64748b;font-size:14px">Close this tab. To restart, run <code>start_localhelpbot</code> in terminal.</p></div>';
+            document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column;gap:16px"><i class="fas fa-power-off" style="font-size:48px;color:#475569"></i><h2 style="color:#94a3b8;font-size:20px">TheAgent0 has been shut down</h2><p style="color:#64748b;font-size:14px">Close this tab. To restart, run <code>start_theagent0</code> in terminal.</p></div>';
         }
 
         // ── Health banner (Change Mode tab) ──

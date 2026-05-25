@@ -209,7 +209,7 @@ def check_proxy_port(port: int, *, is_self: bool = False) -> CheckResult:
             name=f"Port {port} free",
             status="warn",
             message=f"port {port} already taken",
-            detail="Another LocalHelpBot proxy might be running — close that tab first.",
+            detail="Another TheAgent0 proxy might be running — close that tab first.",
         )
     finally:
         try:
@@ -306,7 +306,7 @@ def _cli_main() -> int:
         from rich.table import Table
         console = Console()
         color = {"green": "green", "yellow": "yellow", "red": "red"}[overall]
-        console.rule(f"[bold {color}]LocalHelpBot healthcheck — {overall.upper()}[/bold {color}]")
+        console.rule(f"[bold {color}]TheAgent0 healthcheck — {overall.upper()}[/bold {color}]")
         table = Table(show_header=True, header_style="bold cyan")
         table.add_column("Check", style="cyan")
         table.add_column("Status")
@@ -318,7 +318,7 @@ def _cli_main() -> int:
         console.print(table)
     except Exception:
         # No rich — plain output.
-        print(f"LocalHelpBot healthcheck — {overall.upper()}")
+        print(f"TheAgent0 healthcheck — {overall.upper()}")
         for r in results:
             print(f"  [{r.status.upper():4}] {r.name}: {r.message}")
             if r.detail:

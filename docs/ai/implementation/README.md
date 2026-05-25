@@ -22,7 +22,7 @@ description: Technical implementation notes, patterns, and code guidelines
 
 ```bash
 git clone <repo-url>
-cd LocalHelpBot
+cd TheAgent0
 ```
 
 ### Bước 2 — Cài Ollama & pull model
@@ -113,7 +113,7 @@ Chunk → embed (Ollama `mxbai-embed-large`) → ChromaDB tại `cad_db/`. Cập
 ### Bước 6 — Khởi chạy
 
 ```bash
-.\start_localhelpbot.bat
+.\start_theagent0.bat
 ```
 
 UI tự mở tại `http://localhost:11435`. Đóng tab → proxy tự tắt sau 15s (heartbeat 45s threshold cho network). Hoặc nhấn nút **power off** góc phải UI.
@@ -121,7 +121,7 @@ UI tự mở tại `http://localhost:11435`. Đóng tab → proxy tự tắt sau
 ## Code Structure
 
 ```
-LocalHelpBot/
+TheAgent0/
 ├── config.py                  # Config duy nhất — sửa khi clone
 ├── core/
 │   ├── proxy.py               # HTTP proxy :11435, điểm vào chính
@@ -144,10 +144,10 @@ LocalHelpBot/
 ├── scripts/
 │   ├── update_rag.py process_data.py
 ├── docs/                      # RAG corpus + ai/ phase docs
-├── HelpBotUI/index.html       # Web UI (script + CSS inline)
+├── TheAgent0UI/index.html     # Web UI (script + CSS inline)
 ├── runtime_overrides.json     # (tự tạo) gitignored, API key mã hoá
 ├── .secret_key                # (Linux/Mac) Fernet key, gitignored
-├── start_localhelpbot.bat     # Launcher Windows
+├── start_theagent0.bat        # Launcher Windows
 └── build_exe.py               # One-file packaging
 ```
 
@@ -245,7 +245,7 @@ Regex `[A-Za-z0-9._-]+` + optional `[extras]` và version specifier. **Không** 
   {"mcpServers": {"rag-cad": {
       "command": "python",
       "args": ["core/mcp_server.py"],
-      "cwd": "/path/to/LocalHelpBot"}}}
+      "cwd": "/path/to/TheAgent0"}}}
   ```
 - **Discord automation**:
   ```python

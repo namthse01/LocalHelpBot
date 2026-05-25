@@ -206,7 +206,7 @@ def configure(
         lvl = (level or DEFAULT_LEVEL).upper()
         logging.getLogger().setLevel(lvl)
         for sub in SUBSYSTEMS:
-            logging.getLogger(f"localhelpbot.{sub}").setLevel(lvl)
+            logging.getLogger(f"theagent0.{sub}").setLevel(lvl)
 
         if _CONFIGURED and not force:
             return
@@ -255,14 +255,14 @@ def configure(
 
 
 def get_logger(subsystem: str) -> logging.Logger:
-    """Return a logger named `localhelpbot.<subsystem>`.
+    """Return a logger named `theagent0.<subsystem>`.
 
     The first call lazily configures the global handler chain.
     Adds a `_SubsystemFilter` so every record carries `subsystem` info.
     """
     if not _CONFIGURED:
         configure()
-    logger = logging.getLogger(f"localhelpbot.{subsystem}")
+    logger = logging.getLogger(f"theagent0.{subsystem}")
     # Avoid double-adding the same filter on every call.
     if not any(isinstance(f, _SubsystemFilter) for f in logger.filters):
         logger.addFilter(_SubsystemFilter(subsystem))

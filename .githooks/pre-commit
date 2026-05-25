@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# LocalHelpBot pre-commit guard.
+# TheAgent0 pre-commit guard.
 #
 # Blocks two classes of accidental commits:
 #   (a) files that should NEVER be tracked (runtime_overrides.json, .secret_key,

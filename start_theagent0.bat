@@ -1,16 +1,16 @@
 @echo off
-title LocalHelpBot
+title TheAgent0
 setlocal
 
 :: Single unified launcher.
-:: 1. If dist\LocalHelpBot.exe exists, run it (packaged mode).
+:: 1. If dist\TheAgent0.exe exists, run it (packaged mode).
 :: 2. Otherwise fall back to the venv Python dev mode.
 
 cd /d "%~dp0"
 
-if exist "dist\LocalHelpBot.exe" (
-    echo [launch] Running packaged build: dist\LocalHelpBot.exe
-    start "" "dist\LocalHelpBot.exe"
+if exist "dist\TheAgent0.exe" (
+    echo [launch] Running packaged build: dist\TheAgent0.exe
+    start "" "dist\TheAgent0.exe"
     exit /b 0
 )
 
@@ -25,6 +25,6 @@ start /b venv\Scripts\python core\proxy.py
 timeout /t 3 >nul
 start http://localhost:11435
 echo.
-echo LocalHelpBot is running at http://localhost:11435
+echo TheAgent0 is running at http://localhost:11435
 echo Close this window to stop the proxy.
 pause

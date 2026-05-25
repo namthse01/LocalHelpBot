@@ -212,7 +212,7 @@ def pretty_print_validation_error(err: ValidationError) -> None:
         console = Console(stderr=True, force_terminal=True)
         console.rule("[bold red]Config validation failed[/bold red]")
         console.print(
-            "[red]LocalHelpBot refused to start because [bold]config.py[/bold] "
+            "[red]TheAgent0 refused to start because [bold]config.py[/bold] "
             "or [bold]runtime_overrides.json[/bold] has invalid entries.[/red]\n"
         )
         table = Table(show_header=True, header_style="bold magenta")

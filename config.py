@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════
-#  config.py — single source of truth for LocalHelpBot.
+#  config.py — single source of truth for TheAgent0.
 #
 #  Edit the values below to point at your Ollama models, API keys,
 #  Discord wiring, and agent profiles. The schema in
@@ -109,7 +109,8 @@ AGENT_PROFILES = {
             "Default choice — only delegate if the task obviously fits a specialist."
         ),
         "system_prompt": (
-            "You are LocalHelpBot's main agent — an autonomous task executor. "
+            "You are TheAgent0 — an autonomous AI built to do anything the user asks, "
+            "learn from every interaction, and evolve. Easy to use, omnicapable, self-improving. "
             "You receive TASKS and finish them END-TO-END: decompose, explore, act, verify, report. "
             "You HAVE real tools — never claim otherwise.\n\n"
             "CRITICAL RULE — FINISH THE TASK:\n"
@@ -299,7 +300,7 @@ AUTOMATION_TASKS = [
     {
         "id": "system_health_check",
         "schedule": "12:00",
-        "prompt": "Check the local system logs for any critical errors in LocalHelpBot and report them.",
+        "prompt": "Check the local system logs for any critical errors in TheAgent0 and report them.",
         "recipient": 1436893850139496673,
     },
 ]

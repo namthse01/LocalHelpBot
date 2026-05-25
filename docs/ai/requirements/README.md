@@ -23,7 +23,7 @@ description: Clarify the problem space, gather requirements, and define success 
 **Secondary goals**
 - Tích hợp Discord Bot, MCP server cho Claude Code, và VS Code (Continue) qua cùng một proxy `localhost:11435`.
 - Plugin system để thêm tool mới không sửa core.
-- One-file packaging qua [build_exe.py](../../../build_exe.py) → `dist/LocalHelpBot.exe`.
+- One-file packaging qua [build_exe.py](../../../build_exe.py) → `dist/TheAgent0.exe`.
 
 **Non-goals**
 - Không bundle Ollama (phải cài ngoài).
@@ -55,5 +55,5 @@ description: Clarify the problem space, gather requirements, and define success 
 ## Questions & Open Items
 
 - Có nên auto-detect GPU VRAM để suggest model mặc định không?
-- Linux/Mac parity: cần script `.sh` tương đương `start_localhelpbot.bat`.
+- Linux/Mac parity: cần script `.sh` tương đương `start_theagent0.bat`.
 - Plugin marketplace / signed plugins — tương lai.

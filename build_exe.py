@@ -1,5 +1,5 @@
 """
-Build a single LocalHelpBot.exe that launches the proxy + Web UI.
+Build a single TheAgent0.exe that launches the proxy + Web UI.
 
 Usage (from the repo root, inside the venv):
     python build_exe.py
@@ -7,13 +7,13 @@ Usage (from the repo root, inside the venv):
 Requirements:
     pip install pyinstaller
 
-The resulting exe lives in dist/LocalHelpBot.exe. It still needs Ollama
+The resulting exe lives in dist/TheAgent0.exe. It still needs Ollama
 running locally (Ollama is a separate ~4GB binary; bundling it would be
 wrong). Double-clicking the exe starts the proxy and opens the browser.
 
 Bundled inside the exe:
     - core/*.py, config.py, data/*.py
-    - HelpBotUI/            (web UI)
+    - TheAgent0UI/          (web UI)
     - docs/                 (RAG docs — optional, can be large)
 
 NEVER bundled — the exe reads/writes them from alongside itself at runtime:
@@ -35,7 +35,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).parent.resolve()
-NAME = "LocalHelpBot"
+NAME = "TheAgent0"
 ENTRY = ROOT / "launcher.py"
 
 # Hidden-imports PyInstaller may miss (dynamic imports in langchain, chromadb)
@@ -51,7 +51,7 @@ HIDDEN = [
 ]
 
 DATAS = [
-    ("HelpBotUI", "HelpBotUI"),
+    ("TheAgent0UI", "TheAgent0UI"),
     ("core", "core"),
     ("data", "data"),
     ("docs", "docs"),

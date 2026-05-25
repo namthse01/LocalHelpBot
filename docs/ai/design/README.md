@@ -10,7 +10,7 @@ description: Define the technical architecture, components, and data models
 
 ```mermaid
 graph TD
-  UI[Web UI :11435<br/>HelpBotUI/index.html] -->|HTTP| Proxy
+  UI[Web UI :11435<br/>TheAgent0UI/index.html] -->|HTTP| Proxy
   VSCode[VS Code + Continue] -->|Ollama API| Proxy
   ClaudeCode[Claude Code MCP] -->|stdio| MCP[core/mcp_server.py]
   Discord[Discord Bot] --> Gateway[core/discord_gateway.py]
@@ -80,7 +80,7 @@ Header `X-Response-Time-Ms` và `X-Model-Used` đính kèm mọi response chat.
 
 ## Component Breakdown
 
-- **Frontend**: [HelpBotUI/](../../../HelpBotUI/) — single page với 5 tab (Chat, Agents, Connect, Daily Tasks, Change Mode). Permission modal với 4 scope (Deny / Allow once / Allow for session / Always this tool).
+- **Frontend**: [TheAgent0UI/](../../../TheAgent0UI/) — single page với 5 tab (Chat, Agents, Connect, Daily Tasks, Change Mode). Permission modal với 4 scope (Deny / Allow once / Allow for session / Always this tool).
 - **Backend core**: proxy, orchestrator, agent loop, provider, permissions, secrets.
 - **Data pipeline**: [data/indexer.py](../../../data/indexer.py) (chunk → embed → store) + [scripts/update_rag.py](../../../scripts/update_rag.py).
 - **Integrations**: Discord Gateway, MCP server, Automation Scheduler.

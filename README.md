@@ -1,11 +1,15 @@
-# LocalHelpBot
+# TheAgent0
+
+> One AI. Easy to use. Can do everything. Self-learning. Self-evolving.
+> (Project formerly known as **LocalHelpBot** — see [docs/ai/vision/lego-architecture.md](docs/ai/vision/lego-architecture.md) for the north star.)
+
 
 > **v4 (2026-05) — ChatGPT-grade UX, deep tools, self-learning.**
 > Building on the v3 reliability core:
 > - **Modern chat UI** — markdown + syntax highlighting (marked + highlight.js),
 >   conversation sidebar (`/api/sessions`), slash commands (`/new`, `/agent`,
 >   `/remember`, `/help`), drag-and-drop file upload, confidence badges,
->   quick-action chips. Inline in [HelpBotUI/index.html](HelpBotUI/index.html).
+>   quick-action chips. Inline in [TheAgent0UI/index.html](TheAgent0UI/index.html).
 > - **Deep computer access** — `screenshot`, `clipboard_read/write`,
 >   `system_info` (CPU/RAM/GPU/disks/net), `open_with_default_app`,
 >   `list_windows` (Windows), `watch_file`, `find_in_files`, `read_env`.
@@ -56,7 +60,7 @@
 > See [docs/ai/testing/troubleshooting.md](docs/ai/testing/troubleshooting.md)
 > for the v3 failure-mode catalogue.
 
-> **v2 (2026-04):** ported core patterns from claude-code — structured `<tool_use>` blocks with **parallel tool calls per turn**, `Tool` schema registry ([core/tool_schema.py](core/tool_schema.py)), environment + tool-catalog injection ([core/context.py](core/context.py)), real **Task sub-agent** tool replacing the ad-hoc `delegate`. Legacy `ACTION: {...}` still parsed for back-compat. One-file packaging via [build_exe.py](build_exe.py) → `dist/LocalHelpBot.exe`; [start_localhelpbot.bat](start_localhelpbot.bat) runs the exe if built, else the dev venv. Ollama remains an external dependency.
+> **v2 (2026-04):** ported core patterns from claude-code — structured `<tool_use>` blocks with **parallel tool calls per turn**, `Tool` schema registry ([core/tool_schema.py](core/tool_schema.py)), environment + tool-catalog injection ([core/context.py](core/context.py)), real **Task sub-agent** tool replacing the ad-hoc `delegate`. Legacy `ACTION: {...}` still parsed for back-compat. One-file packaging via [build_exe.py](build_exe.py) → `dist/TheAgent0.exe`; [start_theagent0.bat](start_theagent0.bat) runs the exe if built, else the dev venv. Ollama remains an external dependency.
 
 Hệ thống AI Multi-Agent chạy local, kết hợp RAG + Agentic Loop tự sửa lỗi + Multi-Model Orchestration. Fallback tự động từ Cloud API (**Anthropic / OpenAI / Google Gemini & Gemma**) sang Ollama local khi hết token hoặc mất mạng. Đổi provider / model / API key trực tiếp trong Web UI (tab **Change Mode**) — API key mã hoá tại chỗ (DPAPI trên Windows, Fernet trên Linux/Mac). Tích hợp Discord Bot, MCP server cho Claude Code, và VS Code (Continue).
 
@@ -65,7 +69,7 @@ Hệ thống AI Multi-Agent chạy local, kết hợp RAG + Agentic Loop tự s�
 ## Quick start
 
 ```bash
-git clone <repo-url> && cd LocalHelpBot
+git clone <repo-url> && cd TheAgent0
 
 # Pull models
 ollama pull qwen3.5 && ollama pull mxbai-embed-large && ollama pull glm-4.7-flash
@@ -83,7 +87,7 @@ git config core.hooksPath .githooks
 
 # Build RAG & chạy
 python data/indexer.py
-.\start_localhelpbot.bat
+.\start_theagent0.bat
 # UI tự mở http://localhost:11435
 ```
 
@@ -137,15 +141,15 @@ Tài liệu đầy đủ tổ chức theo ai-devkit phases trong [docs/ai/](docs
 ## Repo layout (rút gọn)
 
 ```
-LocalHelpBot/
+TheAgent0/
 ├── config.py                  # Config duy nhất
 ├── core/                      # proxy, orchestrator, agent, providers, tools, plugins/
 ├── data/                      # RAG pipeline (chunk, embed, store)
 ├── scripts/                   # update_rag.py, process_data.py
-├── HelpBotUI/                 # Web UI
+├── TheAgent0UI/               # Web UI
 ├── docs/                      # RAG corpus + ai/ phase docs
 ├── build_exe.py               # One-file packaging
-└── start_localhelpbot.bat     # Launcher
+└── start_theagent0.bat        # Launcher
 ```
 
 Xem đầy đủ trong [docs/ai/implementation/README.md](docs/ai/implementation/README.md#code-structure).

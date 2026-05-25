@@ -1,7 +1,7 @@
 ---
 phase: testing
 title: Troubleshooting — top failure modes
-description: Red-flag signs, root causes, and fixes for the most common LocalHelpBot issues. Borrows the "Stop-the-Line" diagnostic pattern from the How_AI_Learn skills collection.
+description: Red-flag signs, root causes, and fixes for the most common TheAgent0 issues. Borrows the "Stop-the-Line" diagnostic pattern from the How_AI_Learn skills collection.
 ---
 
 # Troubleshooting
@@ -149,7 +149,7 @@ To temporarily allow all channels in a guild during dev, set `DISCORD_SETTINGS["
 - A previous modal was dismissed via DOM manipulation rather than the Allow/Deny buttons.
 
 **Fix:**
-- Bring the LocalHelpBot tab to the foreground.
+- Bring the TheAgent0 tab to the foreground.
 - Hard-refresh the UI (Ctrl+F5).
 - Confirm `pollPermissions` is firing in DevTools console.
 
@@ -178,7 +178,7 @@ If the modal renders but the diff/command preview is empty, the tool may have se
 - File dropped on chat input doesn't trigger an "Uploading…" message.
 - Or it uploads but the agent doesn't read the file.
 
-**Root cause:** the drag-and-drop handler is wired to `#input-wrap` ([HelpBotUI/index.html](../../../HelpBotUI/index.html)). If your file is > 30 MB or your browser's `dataTransfer.files` is empty (rare; usually because of a wonky drop source), the upload skips.
+**Root cause:** the drag-and-drop handler is wired to `#input-wrap` ([TheAgent0UI/index.html](../../../TheAgent0UI/index.html)). If your file is > 30 MB or your browser's `dataTransfer.files` is empty (rare; usually because of a wonky drop source), the upload skips.
 
 **Fix:**
 - Check DevTools network for a `POST /api/upload` call. If absent, the drop target was missed — drop directly on the textarea, not anywhere else on the page.

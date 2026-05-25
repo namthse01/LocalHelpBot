@@ -37,7 +37,7 @@ scheduler = TaskScheduler(orchestrator, client)
 async def on_ready():
     logger.info(f'Logged in as {client.user} (ID: {client.user.id})')
     logger.info(f'Monitoring Guilds: {list(DISCORD_SETTINGS["guilds"].keys())}')
-    logger.info('Discord Gateway is active and connected to LocalHelpBot!')
+    logger.info('Discord Gateway is active and connected to TheAgent0!')
 
     # Start the automation scheduler
     scheduler.start()
@@ -105,8 +105,8 @@ async def on_message(message):
                 await message.reply(f"❌ Proxy Error ({response.status_code}): Unable to get a response from the local bot.")
 
         except requests.exceptions.ConnectionError:
-            logger.error("Connection error to LocalHelpBot Proxy.")
-            await message.reply("⚠️ LocalHelpBot Proxy is not running. Please start the proxy first!")
+            logger.error("Connection error to TheAgent0 Proxy.")
+            await message.reply("⚠️ TheAgent0 Proxy is not running. Please start the proxy first!")
         except Exception as e:
             logger.exception(f"An unexpected error occurred: {e}")
             await message.reply(f"⚠️ An unexpected error occurred: {str(e)}")

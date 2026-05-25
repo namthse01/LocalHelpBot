@@ -87,7 +87,7 @@ description: Define testing approach, test cases, and quality assurance
 | `RAG database path not found: cad_db` | Chưa build RAG | `python data/indexer.py` |
 | `No module named 'chromadb'` | Chưa cài deps | Activate venv rồi pip install |
 | `Invalid Discord Token` | Token sai | Kiểm tra `DISCORD_TOKEN` |
-| `FileNotFoundError: HelpBotUI/index.html` | Thiếu UI file | Đảm bảo file tồn tại |
+| `FileNotFoundError: TheAgent0UI/index.html` | Thiếu UI file | Đảm bảo file tồn tại |
 | Port 11435 bị chiếm | Process khác | Đổi `PROXY_PORT` hoặc kill process |
 | `HTTP 401 Unauthorized` | Key sai / nhầm provider | Check format: `sk-ant-` / `sk-` / `AIza-` |
 | `HTTP 400` từ Google | Model không tồn tại / safety block | Log `[google] HTTP 400` — dùng model hợp lệ |

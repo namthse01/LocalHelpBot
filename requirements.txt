@@ -1,4 +1,4 @@
-# LocalHelpBot — runtime requirements
+# TheAgent0 — runtime requirements
 #
 # Core deps (always required)
 chromadb>=1.0

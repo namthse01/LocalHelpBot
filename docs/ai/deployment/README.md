@@ -11,9 +11,9 @@ description: Define deployment process, infrastructure, and release procedures
 - **Local-first, single-user.** Không có cloud hosting — mỗi user chạy trên máy riêng.
 - **Components trên máy user:**
   - Ollama daemon (port `11434`) — external dependency, cài riêng từ https://ollama.com/.
-  - LocalHelpBot proxy (port `11435`) — chạy qua `.exe` đã build hoặc dev venv.
+  - TheAgent0 proxy (port `11435`) — chạy qua `.exe` đã build hoặc dev venv.
   - ChromaDB embed tại thư mục `cad_db/` (tự tạo khi index).
-- **Không có staging / production split** — môi trường duy nhất là local user machine. "Dev" = chạy từ venv; "Release" = chạy từ `dist/LocalHelpBot.exe`.
+- **Không có staging / production split** — môi trường duy nhất là local user machine. "Dev" = chạy từ venv; "Release" = chạy từ `dist/TheAgent0.exe`.
 
 ## Deployment Pipeline
 
@@ -23,23 +23,23 @@ One-file packaging qua [build_exe.py](../../../build_exe.py):
 
 ```bash
 python build_exe.py
-# → dist/LocalHelpBot.exe
+# → dist/TheAgent0.exe
 ```
 
-- Đóng gói `core/`, `data/`, `scripts/`, `HelpBotUI/`, `config.py` vào single exe (PyInstaller one-file).
+- Đóng gói `core/`, `data/`, `scripts/`, `TheAgent0UI/`, `config.py` vào single exe (PyInstaller one-file).
 - **Không bundle** Ollama (license/size) — user phải cài riêng.
-- Asset UI (`HelpBotUI/index.html`) embedded dưới dạng resource.
+- Asset UI (`TheAgent0UI/index.html`) embedded dưới dạng resource.
 
 ### CI/CD
 
-- Chưa có CI tự động. Release hiện tại = manual: `python build_exe.py` → test thủ công → commit `dist/LocalHelpBot.exe` nếu muốn ship.
+- Chưa có CI tự động. Release hiện tại = manual: `python build_exe.py` → test thủ công → commit `dist/TheAgent0.exe` nếu muốn ship.
 - Future: GitHub Actions build trên `windows-latest`, upload artifact.
 
 ## Environment Configuration
 
 ### Development
 
-- Chạy trực tiếp từ venv: `.\start_localhelpbot.bat` tự detect — nếu không có `dist/LocalHelpBot.exe` thì chạy `python core/proxy.py` với venv.
+- Chạy trực tiếp từ venv: `.\start_theagent0.bat` tự detect — nếu không có `dist/TheAgent0.exe` thì chạy `python core/proxy.py` với venv.
 - Config: sửa trực tiếp [config.py](../../../config.py).
 - Hot-reload: đổi provider/model/key qua Web UI → Change Mode → Apply (không cần restart).
 
@@ -49,7 +49,7 @@ python build_exe.py
 
 ### Production (user machine)
 
-- Chạy từ `dist/LocalHelpBot.exe` qua `start_localhelpbot.bat` (auto fallback dev nếu exe thiếu).
+- Chạy từ `dist/TheAgent0.exe` qua `start_theagent0.bat` (auto fallback dev nếu exe thiếu).
 - Config runtime persist trong `runtime_overrides.json` ở cùng thư mục exe.
 - Log: `proxy.log`, `gateway.log` ở cùng thư mục.
 
@@ -61,7 +61,7 @@ python build_exe.py
    - [ ] RAG đã build (`cad_db/` tồn tại).
    - [ ] `config.py` đã set `CHAT_MODEL`, `EMBED_MODEL` đúng.
 2. **Execution**
-   - Chạy `.\start_localhelpbot.bat`.
+   - Chạy `.\start_theagent0.bat`.
    - Chờ UI tự mở `http://localhost:11435`.
    - (Optional) Vào **Change Mode** nhập API key cloud → Apply.
 3. **Post-deployment validation**

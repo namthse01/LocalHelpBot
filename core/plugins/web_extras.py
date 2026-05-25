@@ -45,7 +45,7 @@ _HEADERS_HTML = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 _HEADERS_API = {
-    "User-Agent": "LocalHelpBot/1.0 (+https://github.com/)",
+    "User-Agent": "TheAgent0/1.0 (+https://github.com/)",
     "Accept": "application/vnd.github+json",
 }
 

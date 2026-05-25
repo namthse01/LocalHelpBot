@@ -363,7 +363,7 @@ def register(registry: ToolRegistry) -> None:
     registry.register(Tool(
         name="update_self",
         description=(
-            "Pull the latest LocalHelpBot code from `origin/<branch>`. "
+            "Pull the latest TheAgent0 code from `origin/<branch>`. "
             "Fast-forward only. Refuses dirty trees or unexpected branches. "
             "Asks user permission with a preview of incoming commits. "
             "DISABLED unless config.py sets UPDATE_SELF_ENABLED = True."

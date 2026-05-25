@@ -1,6 +1,6 @@
 # Agents catalog
 
-LocalHelpBot exposes **virtual models** through the proxy (`core/proxy.py`). They look like normal Ollama models to any client (the Web UI dropdown, VS Code Continue, the Discord bridge, MCP servers) but each routes the request through different middleware: orchestrator, RAG injection, browser-data reader, etc.
+TheAgent0 exposes **virtual models** through the proxy (`core/proxy.py`). They look like normal Ollama models to any client (the Web UI dropdown, VS Code Continue, the Discord bridge, MCP servers) but each routes the request through different middleware: orchestrator, RAG injection, browser-data reader, etc.
 
 Pick by what the task needs, not by what sounds cool. The router (`auto-agent`) is usually the right default.
 

@@ -289,7 +289,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/html")
             self.end_headers()
             try:
-                with open("HelpBotUI/index.html", "rb") as f:
+                with open("TheAgent0UI/index.html", "rb") as f:
                     self.wfile.write(f.read())
             except Exception as e:
                 self.wfile.write(f"Error loading index.html: {e}".encode())
@@ -298,7 +298,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if self.path.startswith("/static/"):
             file_path = self.path[len("/static/"):]
             try:
-                with open(f"HelpBotUI/{file_path}", "rb") as f:
+                with open(f"TheAgent0UI/{file_path}", "rb") as f:
                     content = f.read()
                 self.send_response(200)
                 mime = "text/javascript" if file_path.endswith(".js") else "text/css" if file_path.endswith(".css") else "application/octet-stream"
@@ -969,7 +969,7 @@ def main():
     _server_ref = server
 
     banner = (
-        f"LocalHelpBot proxy listening on http://localhost:{PROXY_PORT}\n"
+        f"TheAgent0 proxy listening on http://localhost:{PROXY_PORT}\n"
         f"  cad-rag       -> RAG + {REAL_MODEL}\n"
         f"  ui-agent      -> UI system + {REAL_MODEL}\n"
         f"  code-agent    -> main specialist (full registry)\n"

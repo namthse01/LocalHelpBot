@@ -8,8 +8,9 @@ return a single, budget-aware string the model will actually attend to.
 The four tiers, in order of priority (highest first — never pruned):
 
   T1 Rules     — base agent system prompt + project memory (CLAUDE.md,
-                 AGENT.md, .localhelpbot.md). These are the "always true"
-                 facts of how this agent works.
+                 AGENT.md, .theagent0.md — and .localhelpbot.md kept for
+                 backward compatibility with the legacy project name).
+                 These are the "always true" facts of how this agent works.
   T2 Session   — user-stated goal, sticky decisions, files touched, and
                  the running conversation summary. Persists across turns.
   T3 Task      — environment block (cwd / OS / date / git), tools
@@ -46,7 +47,7 @@ from core.memory import (
     get_default_engine,
 )
 
-PROJECT_MEMORY_FILES = ("CLAUDE.md", "AGENT.md", ".localhelpbot.md")
+PROJECT_MEMORY_FILES = ("CLAUDE.md", "AGENT.md", ".theagent0.md", ".localhelpbot.md")
 PROJECT_MEMORY_BYTES = 4000
 
 # Soft caps per tier — when the assembled prompt exceeds these we start

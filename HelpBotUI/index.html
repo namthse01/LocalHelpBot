@@ -6,6 +6,10 @@
     <title>LocalHelpBot | AI Command Center</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- v4 Slice 1: markdown rendering + syntax highlighting via CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
     <style>
         body { background-color: #0f172a; color: #e2e8f0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif; }
         .tab-content { display: none !important; }
@@ -36,6 +40,52 @@
         .activity-arg-chip { font-size:11px; color:#818cf8; background:#1e293b; padding:1px 6px; border-radius:4px; margin-left:4px; }
         .activity-detail { display:none; margin:4px 0 6px 26px; padding:8px 10px; background:#0f172a; border-left:2px solid #334155; border-radius:4px; font-size:11px; white-space:pre-wrap; color:#94a3b8; max-height:220px; overflow-y:auto; }
         .activity-row.open + .activity-detail { display:block; }
+
+        /* v4 Slice 1: markdown rendering inside chat bubbles */
+        .markdown-body { line-height:1.6; }
+        .markdown-body p { margin:0 0 8px 0; }
+        .markdown-body p:last-child { margin-bottom:0; }
+        .markdown-body h1, .markdown-body h2, .markdown-body h3 { font-weight:600; margin:12px 0 6px 0; color:#f1f5f9; }
+        .markdown-body h1 { font-size:18px; } .markdown-body h2 { font-size:16px; } .markdown-body h3 { font-size:14px; }
+        .markdown-body ul, .markdown-body ol { padding-left:22px; margin:4px 0 8px 0; }
+        .markdown-body li { margin:2px 0; }
+        .markdown-body code:not(pre code) { background:#0f172a; padding:1px 5px; border-radius:4px; font-size:12px; color:#fbbf24; font-family:ui-monospace,Menlo,monospace; }
+        .markdown-body pre { background:#0f172a; border:1px solid #1e293b; border-radius:8px; padding:10px 12px; margin:8px 0; overflow-x:auto; font-family:ui-monospace,Menlo,monospace; font-size:12.5px; }
+        .markdown-body pre code { background:none; padding:0; color:inherit; }
+        .markdown-body a { color:#818cf8; text-decoration:underline; }
+        .markdown-body blockquote { border-left:3px solid #475569; padding-left:10px; color:#94a3b8; margin:6px 0; }
+        .markdown-body table { border-collapse:collapse; margin:6px 0; }
+        .markdown-body th, .markdown-body td { border:1px solid #334155; padding:4px 8px; font-size:12px; }
+        .markdown-body hr { border:0; border-top:1px solid #334155; margin:10px 0; }
+
+        /* v4 Slice 1: confidence badge */
+        .confidence-chip { display:inline-flex; align-items:center; gap:4px; font-size:10.5px; padding:2px 7px; border-radius:10px; margin-top:6px; font-weight:600; }
+        .confidence-green  { background:rgba(34,197,94,0.15);   color:#86efac; border:1px solid rgba(34,197,94,0.35); }
+        .confidence-yellow { background:rgba(245,158,11,0.15);  color:#fcd34d; border:1px solid rgba(245,158,11,0.35); }
+        .confidence-red    { background:rgba(239,68,68,0.15);   color:#fca5a5; border:1px solid rgba(239,68,68,0.35); }
+
+        /* v4 Slice 1: slash command palette */
+        .slash-palette { position:absolute; bottom:calc(100% + 6px); left:0; right:0; background:#1e293b; border:1px solid #334155; border-radius:10px; max-height:240px; overflow-y:auto; box-shadow:0 8px 24px rgba(0,0,0,0.4); display:none; z-index:50; }
+        .slash-palette.open { display:block; }
+        .slash-item { padding:8px 12px; cursor:pointer; font-size:13px; color:#cbd5e1; border-bottom:1px solid #1e293b; display:flex; gap:8px; align-items:center; }
+        .slash-item:hover, .slash-item.active { background:#334155; color:#fff; }
+        .slash-item .slash-cmd { color:#fbbf24; font-weight:600; font-family:ui-monospace,Menlo,monospace; min-width:90px; }
+        .slash-item .slash-desc { color:#94a3b8; font-size:11.5px; }
+
+        /* v4 Slice 1: drag-and-drop overlay */
+        .drop-active { outline:2px dashed #818cf8 !important; outline-offset:-4px; background:rgba(129,140,248,0.08) !important; }
+
+        /* v4 Slice 1: quick action chips */
+        .quick-chips { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px; }
+        .quick-chip { font-size:12px; padding:4px 10px; border-radius:16px; background:#1e293b; border:1px solid #334155; color:#cbd5e1; cursor:pointer; transition:all 0.15s; }
+        .quick-chip:hover { background:#334155; color:#fff; border-color:#818cf8; }
+
+        /* v4 Slice 1: conversation sidebar (Conversations modal) */
+        .sessions-modal { position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:9000; display:flex; align-items:center; justify-content:center; }
+        .sessions-modal-body { background:#1e293b; border:1px solid #334155; border-radius:12px; width:560px; max-width:92vw; max-height:80vh; overflow:hidden; display:flex; flex-direction:column; }
+        .session-row { display:flex; gap:10px; padding:10px 14px; cursor:pointer; border-bottom:1px solid #334155; align-items:center; }
+        .session-row:hover { background:#334155; }
+        .session-meta { font-size:11px; color:#64748b; }
     </style>
 </head>
 <body class="flex flex-col h-screen overflow-hidden">
@@ -87,13 +137,23 @@
         <div id="content-chat" class="tab-content active flex-layout h-full flex flex-col">
             <div class="h-14 border-b border-slate-800 bg-slate-900/50 flex items-center justify-between px-6">
                 <div class="flex items-center gap-3">
+                    <button onclick="openSessionsModal()" class="text-slate-400 hover:text-slate-200 text-sm" title="Past conversations">
+                        <i class="fas fa-comments mr-1"></i> Conversations
+                    </button>
+                    <span class="text-slate-700">|</span>
                     <span class="text-xs font-semibold text-slate-500 uppercase">Active Agent:</span>
                     <select id="chat-agent-select" onchange="setModel(this.value)" class="bg-slate-800 border border-slate-700 text-sm text-slate-200 rounded-md px-2 py-1 focus:outline-none focus:border-indigo-500">
                     </select>
+                    <span id="chat-session-hint" class="text-[10px] text-slate-600 font-mono" title="Current session id"></span>
                 </div>
-                <button onclick="clearChat()" class="text-slate-400 hover:text-slate-200 text-sm">
-                    <i class="fas fa-trash-alt mr-1"></i> Clear Chat
-                </button>
+                <div class="flex items-center gap-3">
+                    <button onclick="newConversation()" class="text-slate-400 hover:text-slate-200 text-sm" title="Start a fresh conversation">
+                        <i class="fas fa-plus mr-1"></i> New
+                    </button>
+                    <button onclick="clearChat()" class="text-slate-400 hover:text-slate-200 text-sm">
+                        <i class="fas fa-trash-alt mr-1"></i> Clear
+                    </button>
+                </div>
             </div>
             <div id="chat-window" class="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar">
                 <div class="flex justify-center py-10">
@@ -107,14 +167,25 @@
                 </div>
             </div>
             <div class="p-6 bg-slate-900/50">
-                <div class="max-w-4xl mx-auto relative">
-                    <textarea id="user-input" rows="1"
-                        class="w-full bg-slate-800 border border-slate-700 rounded-xl py-3 pl-4 pr-12 text-slate-200 focus:outline-none focus:border-indigo-500 transition-all resize-none custom-scrollbar"
-                        placeholder="Message your AI..."></textarea>
-                    <button id="send-btn"
-                        class="absolute right-2 bottom-2 w-8 h-8 bg-indigo-600 text-white rounded-lg hover:bg-indigo-500 transition-all flex items-center justify-center">
-                        <i class="fas fa-paper-plane text-xs"></i>
-                    </button>
+                <div class="max-w-4xl mx-auto">
+                    <div id="quick-chips" class="quick-chips">
+                        <span class="quick-chip" onclick="fillInput('Summarize this conversation so far into 3 bullet points.')">Summarize chat</span>
+                        <span class="quick-chip" onclick="fillInput('List the files in the current directory.')">List files</span>
+                        <span class="quick-chip" onclick="fillInput('Take a screenshot of my screen and describe what you see.')">Screenshot &amp; describe</span>
+                        <span class="quick-chip" onclick="fillInput('Search the web for the latest version of: ')">Search web</span>
+                        <span class="quick-chip" onclick="fillInput('/help')">/help</span>
+                    </div>
+                    <div id="input-wrap" class="relative">
+                        <textarea id="user-input" rows="1"
+                            class="w-full bg-slate-800 border border-slate-700 rounded-xl py-3 pl-4 pr-12 text-slate-200 focus:outline-none focus:border-indigo-500 transition-all resize-none custom-scrollbar"
+                            placeholder="Message your AI… (try `/` for commands, or drop a file)"></textarea>
+                        <div id="slash-palette" class="slash-palette"></div>
+                        <button id="send-btn"
+                            class="absolute right-2 bottom-2 w-8 h-8 bg-indigo-600 text-white rounded-lg hover:bg-indigo-500 transition-all flex items-center justify-center">
+                            <i class="fas fa-paper-plane text-xs"></i>
+                        </button>
+                    </div>
+                    <div class="text-[10px] text-slate-600 mt-2 px-1">Drop a file (PDF / DOCX / TXT) into the input to attach it.</div>
                 </div>
             </div>
         </div>
@@ -405,21 +476,49 @@
             if (select) select.value = model;
         }
 
-        function appendMessage(role, text) {
+        function appendMessage(role, text, opts) {
+            opts = opts || {};
             const chatWindow = $id('chat-window');
-            if (!chatWindow) return;
+            if (!chatWindow) return null;
             const div = document.createElement('div');
             div.className = `flex ${role === 'user' ? 'justify-end' : 'justify-start'} mb-4`;
             const inner = document.createElement('div');
-            inner.className = `max-w-[80%] px-4 py-2 ${role === 'user' ? 'message-user' : 'message-bot'} text-sm leading-relaxed`;
-            if (text && text.includes('```')) {
-                inner.innerHTML = text.replace(/```([\s\S]*?)```/g, '<pre class="bg-slate-900 p-2 rounded-md my-2 overflow-x-auto text-xs font-mono text-indigo-300">$1</pre>');
-            } else {
+            inner.className = `max-w-[85%] px-4 py-3 ${role === 'user' ? 'message-user' : 'message-bot'} text-sm leading-relaxed`;
+            // v4 Slice 1: render bot output as markdown (with code highlighting).
+            // User input stays plaintext — we don't want their literal markdown
+            // mishandled when echoed back, and avoiding marked() on user input
+            // sidesteps a tiny XSS risk if they paste raw HTML.
+            if (role === 'user' || !(window.marked && window.marked.parse)) {
                 inner.innerText = text || '';
+            } else {
+                const md = document.createElement('div');
+                md.className = 'markdown-body';
+                try {
+                    md.innerHTML = window.marked.parse(text || '');
+                } catch (e) {
+                    md.innerText = text || '';
+                }
+                inner.appendChild(md);
+                if (window.hljs) {
+                    md.querySelectorAll('pre code').forEach(b => {
+                        try { window.hljs.highlightElement(b); } catch (e) {}
+                    });
+                }
+            }
+            // Confidence badge (bot only).
+            if (role === 'bot' && opts.confidence) {
+                const chip = document.createElement('div');
+                const cls = ({green:'confidence-green', yellow:'confidence-yellow', red:'confidence-red'}[opts.confidence]) || 'confidence-yellow';
+                const ico = ({green:'fa-circle-check', yellow:'fa-circle-info', red:'fa-circle-xmark'}[opts.confidence]) || 'fa-circle-info';
+                const label = ({green:'verified by tools', yellow:'partial', red:'low confidence'}[opts.confidence]) || 'partial';
+                chip.className = `confidence-chip ${cls}`;
+                chip.innerHTML = `<i class="fas ${ico}"></i> ${label}`;
+                inner.appendChild(chip);
             }
             div.appendChild(inner);
             chatWindow.appendChild(div);
             chatWindow.scrollTop = chatWindow.scrollHeight;
+            return inner;
         }
 
         function escapeHtml(s) {
@@ -554,37 +653,246 @@
             }
         }
 
+        // v4 Slice 1: per-conversation session_id (echoed via X-Session-Id header).
+        // null means "let the server derive one"; once we get one back, we
+        // include it in subsequent requests so memory continuity is rock solid.
+        let currentSessionId = null;
+        // v4 Slice 1: pending file attachment from drag-drop.
+        let pendingAttachment = null;   // { path, filename, size }
+
+        function updateSessionHint() {
+            const el = $id('chat-session-hint');
+            if (el) el.textContent = currentSessionId ? `sid:${String(currentSessionId).slice(0, 8)}` : '';
+        }
+
+        function newConversation() {
+            currentSessionId = null;
+            pendingAttachment = null;
+            const cw = $id('chat-window');
+            if (cw) cw.innerHTML = '';
+            appendMessage('bot', 'Fresh conversation. How can I help?');
+            updateSessionHint();
+        }
+
+        // ── Slash commands ─────────────────────────────────────────
+        const SLASH_COMMANDS = [
+            { cmd: '/new',      desc: 'Start a fresh conversation (new session id)' },
+            { cmd: '/clear',    desc: 'Clear the chat window (keep session id)' },
+            { cmd: '/agent',    desc: 'Switch active agent — usage: /agent code-agent' },
+            { cmd: '/model',    desc: 'Override Ollama model for next message — /model qwen3.5:latest' },
+            { cmd: '/help',     desc: 'Show this command list' },
+            { cmd: '/remember', desc: 'Save a lesson — /remember always prefer Vietnamese' },
+        ];
+
+        function handleSlashCommand(text) {
+            // Return true if the command was handled (don't send to server).
+            const m = text.trim().match(/^\/(\w+)(?:\s+(.*))?$/);
+            if (!m) return false;
+            const [_, cmd, rest] = m;
+            const arg = (rest || '').trim();
+            if (cmd === 'new') { newConversation(); return true; }
+            if (cmd === 'clear') { const cw = $id('chat-window'); if (cw) cw.innerHTML = ''; return true; }
+            if (cmd === 'agent') {
+                if (arg) { setModel(arg); appendMessage('bot', `Switched active agent to **${arg}**.`); }
+                else appendMessage('bot', `Usage: \`/agent <name>\`. Known: ${Object.keys(configState.agents || {}).join(', ')}`);
+                return true;
+            }
+            if (cmd === 'model') {
+                if (arg) appendMessage('bot', `Will override model to **${arg}** for the next message. (Note: v4 model-override wiring is TBD — for now just route through agent.)`);
+                return true;
+            }
+            if (cmd === 'help') {
+                const lines = SLASH_COMMANDS.map(c => `\`${c.cmd}\` — ${c.desc}`).join('\n');
+                appendMessage('bot', '**Slash commands**\n\n' + lines);
+                return true;
+            }
+            if (cmd === 'remember') {
+                if (!arg) { appendMessage('bot', 'Usage: `/remember <something to remember>`.'); return true; }
+                // Send a marked-up message — Slice 4 (LessonsStore) will pick this up server-side.
+                $id('user-input').value = `Please remember this for future conversations: ${arg}`;
+                return false;   // let it actually send
+            }
+            return false;
+        }
+
+        function fillInput(text) {
+            const el = $id('user-input');
+            if (!el) return;
+            el.value = text;
+            el.focus();
+            // Trigger autosize.
+            el.dispatchEvent(new Event('input'));
+        }
+
+        // ── Slash command palette ──────────────────────────────────
+        function maybeShowSlashPalette() {
+            const inp = $id('user-input');
+            const pal = $id('slash-palette');
+            if (!inp || !pal) return;
+            const v = inp.value;
+            if (!v.startsWith('/')) { pal.classList.remove('open'); pal.innerHTML = ''; return; }
+            const q = v.slice(1).toLowerCase();
+            const matches = SLASH_COMMANDS.filter(c => c.cmd.slice(1).startsWith(q));
+            if (matches.length === 0) { pal.classList.remove('open'); pal.innerHTML = ''; return; }
+            pal.innerHTML = matches.map((c, i) =>
+                `<div class="slash-item ${i === 0 ? 'active' : ''}" data-cmd="${c.cmd}">
+                    <span class="slash-cmd">${c.cmd}</span>
+                    <span class="slash-desc">${escapeHtml(c.desc)}</span>
+                </div>`
+            ).join('');
+            pal.classList.add('open');
+            pal.querySelectorAll('.slash-item').forEach(el => {
+                el.onclick = () => {
+                    fillInput(el.dataset.cmd + ' ');
+                    pal.classList.remove('open');
+                };
+            });
+        }
+
+        // ── Drag and drop ─────────────────────────────────────────
+        function wireDragAndDrop() {
+            const wrap = $id('input-wrap');
+            if (!wrap) return;
+            ['dragenter', 'dragover'].forEach(ev => wrap.addEventListener(ev, e => {
+                e.preventDefault(); e.stopPropagation(); wrap.classList.add('drop-active');
+            }));
+            ['dragleave', 'drop'].forEach(ev => wrap.addEventListener(ev, e => {
+                e.preventDefault(); e.stopPropagation();
+                if (ev === 'drop' || (ev === 'dragleave' && e.target === wrap)) {
+                    wrap.classList.remove('drop-active');
+                }
+            }));
+            wrap.addEventListener('drop', async e => {
+                const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+                if (!f) return;
+                if (f.size > 30 * 1024 * 1024) {
+                    appendMessage('bot', `⚠ File too large (${(f.size / 1024 / 1024).toFixed(1)} MB). Max 30 MB.`);
+                    return;
+                }
+                appendMessage('bot', `📎 Uploading **${escapeHtml(f.name)}** (${(f.size / 1024).toFixed(1)} KB)…`);
+                try {
+                    const buf = await f.arrayBuffer();
+                    const b64 = btoa(String.fromCharCode.apply(null, new Uint8Array(buf)));
+                    const r = await fetch('/api/upload', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ filename: f.name, content_b64: b64, session_id: currentSessionId || '' })
+                    });
+                    const data = await r.json();
+                    if (!data.ok) throw new Error(data.error || 'upload failed');
+                    pendingAttachment = { path: data.path, filename: data.filename, size: data.size };
+                    fillInput(`Read the attached file at \`${data.path}\` and `);
+                } catch (err) {
+                    appendMessage('bot', `❌ Upload failed: ${err.message}`);
+                }
+            });
+        }
+
+        // ── Sessions modal ────────────────────────────────────────
+        async function openSessionsModal() {
+            const wrap = document.createElement('div');
+            wrap.className = 'sessions-modal';
+            wrap.innerHTML = `
+                <div class="sessions-modal-body">
+                    <div style="padding:16px;border-bottom:1px solid #334155;display:flex;justify-content:space-between;align-items:center">
+                        <h3 style="font-size:16px;font-weight:600;color:#e2e8f0">Recent conversations</h3>
+                        <button class="text-slate-400 hover:text-slate-200" onclick="this.closest('.sessions-modal').remove()"><i class="fas fa-times"></i></button>
+                    </div>
+                    <div id="sessions-list" style="overflow-y:auto;flex:1"><div style="padding:18px;text-align:center;color:#64748b">Loading…</div></div>
+                </div>`;
+            wrap.addEventListener('click', e => { if (e.target === wrap) wrap.remove(); });
+            document.body.appendChild(wrap);
+            try {
+                const r = await fetch('/api/sessions');
+                const data = await r.json();
+                const list = wrap.querySelector('#sessions-list');
+                const sess = (data.sessions || []);
+                if (sess.length === 0) {
+                    list.innerHTML = '<div style="padding:18px;text-align:center;color:#64748b">No conversations yet.</div>';
+                    return;
+                }
+                list.innerHTML = '';
+                sess.forEach(s => {
+                    const row = document.createElement('div');
+                    row.className = 'session-row';
+                    const when = new Date((s.last_seen || 0) * 1000).toLocaleString();
+                    const goal = (s.goal || '(no goal recorded)').slice(0, 80);
+                    row.innerHTML = `
+                        <div style="flex:1">
+                            <div style="font-size:13px;color:#cbd5e1">${escapeHtml(goal)}</div>
+                            <div class="session-meta">${escapeHtml(s.last_profile || 'agent')} · ${s.turn_count} turns · ${escapeHtml(when)} · <code style="color:#64748b">${s.sid.slice(0,10)}</code></div>
+                        </div>
+                        <i class="fas fa-chevron-right text-slate-600"></i>`;
+                    row.onclick = () => { resumeSession(s.sid); wrap.remove(); };
+                    list.appendChild(row);
+                });
+            } catch (e) {
+                wrap.querySelector('#sessions-list').innerHTML = `<div style="padding:18px;color:#f87171">Failed: ${escapeHtml(e.message)}</div>`;
+            }
+        }
+
+        async function resumeSession(sid) {
+            // Switch the in-memory session id. The chat window currently has
+            // no rehydration — the server-side context engine carries the
+            // memory (T2 goal + files + sticky + summary) on the very next turn.
+            currentSessionId = sid;
+            const cw = $id('chat-window');
+            if (cw) cw.innerHTML = '';
+            appendMessage('bot', `Resumed session \`${sid.slice(0,10)}\`. The bot will remember the prior context (goal, files touched, sticky decisions) on your next message.`);
+            updateSessionHint();
+        }
+
         async function sendMessage() {
             const input = $id('user-input');
             if (!input) return;
             const text = input.value.trim();
             if (!text) return;
 
+            // v4 Slice 1: slash command handling (some commands send, some don't).
+            if (text.startsWith('/') && handleSlashCommand(text)) {
+                input.value = '';
+                input.style.height = 'auto';
+                $id('slash-palette')?.classList.remove('open');
+                return;
+            }
+
             appendMessage('user', text);
             input.value = '';
             input.style.height = 'auto';
+            $id('slash-palette')?.classList.remove('open');
 
             const panel = createActivityPanel();
-            const ctx = { pendingTools: {} };
+            const ctx = { pendingTools: {}, anyErr: false, anySucc: false, anyLoopBudget: false };
             let finalText = '';
 
+            // v4 Slice 1: clear pending attachment marker on send.
+            const attachedThisTurn = pendingAttachment;
+            pendingAttachment = null;
+
             try {
-                const response = await fetch('/api/chat', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/x-ndjson' },
-                    body: JSON.stringify({
-                        model: currentModel,
-                        messages: [{ role: 'user', content: text }],
-                        stream: true
-                    })
-                });
+                const headers = { 'Content-Type': 'application/json', 'Accept': 'application/x-ndjson' };
+                if (currentSessionId) headers['X-Session-Id'] = currentSessionId;
+                const body = {
+                    model: currentModel,
+                    messages: [{ role: 'user', content: text }],
+                    stream: true,
+                };
+                if (currentSessionId) body.session_id = currentSessionId;
+                const response = await fetch('/api/chat', { method: 'POST', headers, body: JSON.stringify(body) });
                 if (!response.ok) throw new Error(`Server Error: ${response.status}`);
+
+                // Capture session_id echo so the next message stays on this conversation.
+                const echoedSid = response.headers.get('X-Session-Id');
+                if (echoedSid && !currentSessionId) {
+                    currentSessionId = echoedSid;
+                    updateSessionHint();
+                }
 
                 const ct = (response.headers.get('Content-Type') || '').toLowerCase();
                 if (!response.body || !ct.includes('ndjson')) {
-                    // Non-streaming path (legacy models): just show the JSON response
                     const data = await response.json();
                     panel.metaEl.innerHTML = `<i class="fas fa-check text-emerald-400"></i> done`;
+                    if (data.session_id && !currentSessionId) { currentSessionId = data.session_id; updateSessionHint(); }
                     appendMessage('bot', (data.message && data.message.content) || JSON.stringify(data));
                     return;
                 }
@@ -603,17 +911,42 @@
                         if (!line) continue;
                         let frame;
                         try { frame = JSON.parse(line); } catch(e) { continue; }
-                        if (frame.agent_event) renderAgentEvent(panel, frame.agent_event, ctx);
+                        if (frame.agent_event) {
+                            renderAgentEvent(panel, frame.agent_event, ctx);
+                            // Track confidence signals.
+                            if (frame.agent_event.type === 'tool_result') {
+                                if (frame.agent_event.ok) ctx.anySucc = true;
+                                else {
+                                    ctx.anyErr = true;
+                                    if (frame.agent_event.code === 'LOOP_BUDGET') ctx.anyLoopBudget = true;
+                                }
+                            }
+                            // Tokens/sec from per-turn timing if the agent_event includes it.
+                            if (frame.agent_event.turn_ms && panel.metaEl) {
+                                // No token count exposed yet — fall back to "Xms / turn"
+                                const existing = panel.metaEl.dataset.timing || '';
+                                panel.metaEl.dataset.timing = existing + ` · ${frame.agent_event.turn_ms}ms`;
+                            }
+                        }
+                        if (frame.session_id && !currentSessionId) {
+                            currentSessionId = frame.session_id;
+                            updateSessionHint();
+                        }
                         if (frame.done && frame.message && frame.message.content) {
                             finalText = frame.message.content;
                         }
                     }
                 }
-                if (finalText) appendMessage('bot', finalText);
+                // Compute confidence.
+                let confidence = 'yellow';
+                if (ctx.anyLoopBudget || (ctx.anyErr && !ctx.anySucc)) confidence = 'red';
+                else if (ctx.anySucc && !ctx.anyErr) confidence = 'green';
+                else if (!ctx.anyErr && !ctx.anySucc) confidence = 'green';   // no tool calls = trivial Q
+                if (finalText) appendMessage('bot', finalText, { confidence });
                 else panel.metaEl.innerHTML = `<i class="fas fa-check text-emerald-400"></i> done`;
             } catch (error) {
                 panel.metaEl.innerHTML = `<i class="fas fa-times text-red-400"></i> error`;
-                appendMessage('bot', `❌ Error: ${error.message}`);
+                appendMessage('bot', `❌ Error: ${error.message}`, { confidence: 'red' });
             }
         }
 
@@ -892,10 +1225,19 @@
                 userInput.addEventListener('input', function() {
                     this.style.height = 'auto';
                     this.style.height = (this.scrollHeight) + 'px';
+                    // v4 Slice 1: slash-command palette.
+                    maybeShowSlashPalette();
                 });
+                // v4 Slice 1: dismiss palette on blur (mouseclick on item is async).
+                userInput.addEventListener('blur', () => setTimeout(() => {
+                    $id('slash-palette')?.classList.remove('open');
+                }, 150));
             }
+            // v4 Slice 1: enable drag-and-drop file upload on the input wrapper.
+            wireDragAndDrop();
             loadConfig();
             switchTab('chat');
+            updateSessionHint();
             console.log("UI Initialized.");
         }
 

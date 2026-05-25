@@ -20,3 +20,18 @@ reportlab>=4.0
 
 # Process tools (better list_processes / kill_process)
 psutil>=5.9
+
+# ─────────────────────────────────────────────────────────────────
+# v4 additions
+# ─────────────────────────────────────────────────────────────────
+
+# Deep computer-access tools (Slice 2)
+Pillow>=10                   # screenshot
+pyperclip>=1.8               # clipboard read/write
+# pywin32 is already a peer dep on Windows (list_windows tool)
+
+# Optional web-extras (Slice 3) — graceful no-op if missing
+# youtube-transcript-api>=0.6   # uncomment + install for the youtube_transcript tool
+
+# Test suite (Slice 0.4)
+pytest>=8

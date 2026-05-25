@@ -302,6 +302,15 @@ def assemble_context(
     project_memory = _read_project_memory(cwd)
     if project_memory:
         t1_parts.append("<project_memory>\n" + project_memory + "\n</project_memory>")
+    # v4 Slice 4.2: inject persisted lessons learned from the user.
+    try:
+        from core.lessons import get_lessons_store
+        lessons_block = get_lessons_store().render_for_prompt(session_id=session_id)
+        if lessons_block:
+            t1_parts.append(lessons_block)
+    except Exception:
+        # Lessons are best-effort; never block context assembly.
+        pass
     t1 = "\n\n".join(t1_parts)
 
     # ── T2: Session ──────────────────────────────────────────────────

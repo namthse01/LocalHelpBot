@@ -27,10 +27,6 @@ from core.logs import get_logger
 
 log = get_logger("proxy")
 
-def _get_rag():
-    from core.query import query_rag
-    return query_rag
-
 def _get_tools():
     from core.tools import FILE_TOOLS, WEB_TOOLS
     return FILE_TOOLS, WEB_TOOLS
@@ -51,11 +47,12 @@ WEB_MODEL     = "web-creep"
 BROWSER_MODEL = "browser-agent"
 DEEP_MODEL    = "deep-agent"
 AUTO_MODEL     = "auto-agent"
+VISION_MODEL_V = "vision-agent"   # v4 Slice 5
 
-VIRTUAL_MODELS = [CAD_MODEL, UI_MODEL, CODE_MODEL, WEB_MODEL, BROWSER_MODEL, DEEP_MODEL, AUTO_MODEL]
-SCORING_THRESHOLD = 0.3
+VIRTUAL_MODELS = [CAD_MODEL, UI_MODEL, CODE_MODEL, WEB_MODEL, BROWSER_MODEL, DEEP_MODEL, AUTO_MODEL, VISION_MODEL_V]
 
-CAD_SYSTEM = "You are a CAD/AutoCAD specialist agent..."
+# (Legacy: CAD_SYSTEM + SCORING_THRESHOLD removed in v4. cad-rag now routes
+# through `cad-rag-specialist` profile + agentic query_rag tool. See config.py.)
 UI_SYSTEM = "You are a UI/Frontend specialist agent..."
 CODE_SYSTEM = "You are an autonomous coding agent..."
 BROWSER_SYSTEM = "You are browser-agent, a local browser data reader..."
@@ -86,54 +83,16 @@ def _ensure_budget(messages: list, *, session_id: str = "") -> list:
         return messages
 
 
-def _rag_context(query: str) -> str:
-    try:
-        query_rag = _get_rag()
-        resp  = query_rag(query, n_results=3)
-        docs  = resp.get("documents", [[]])[0]
-        metas = resp.get("metadatas", [[]])[0]
-        dists = resp.get("distances", [[]])[0]
-        if not docs: return "NO_DATA"
-        lines, good = [], False
-        for doc, meta, dist in zip(docs, metas, dists):
-            score = 1 - dist
-            if score >= SCORING_THRESHOLD:
-                good = True
-                lines.append(f"[score={score:.3f} | {meta.get('file_name','')}]\n{doc.strip()}")
-        return "\n\n---\n".join(lines) if good else "NO_DATA"
-    except Exception as e:
-        return f"NO_DATA (error: {e})"
-
-def _inject_rag(messages: list, user_q: str, *, session_id: str = "") -> list:
-    """Inject retrieved RAG context into the system prompt for cad-rag.
-
-    Still legacy "auto-inject" behaviour — Slice 5 promotes RAG to a
-    first-class tool. For now we just route through the MemoryEngine so
-    the summary survives the system-prompt rewrite, and we also persist
-    any extracted summary into the session store.
-    """
-    engine = mem.get_default_engine()
-    ctx = _rag_context(user_q)
-    carried = ""
-    if session_id:
-        sess = get_store().get(session_id)
-        if sess and sess.summary:
-            carried = sess.summary
-    if not carried:
-        carried = engine.extract_summary(messages)
-    base = f"{CAD_SYSTEM}\n\n=== RETRIEVED CONTEXT ===\n{ctx}\n=== END CONTEXT ==="
-    new_sys = engine.merge_summary(base, carried)
-    out = [{"role": "system", "content": new_sys}]
-    for msg in messages:
-        if msg.get("role") == "system":
-            continue
-        out.append(msg)
-    return out
-
 def _inject_system(messages: list, system: str, *, session_id: str = "") -> list:
     """Replace the system prompt for forward-only specialists (ui-agent,
-    web-creep, browser-agent). Preserves any carried summary — either
-    from the session store (preferred) or extracted from the messages."""
+    web-creep, browser-agent). Always merges the virtual-model `system`
+    with any carried summary; any non-summary system message from the
+    client is appended below ours rather than skipped.
+
+    v4 Slice 0.3: dropped the legacy early-return that silently kept the
+    client's system message instead of merging ours — that path could
+    swallow `UI_SYSTEM` / `WEB_SYSTEM` entirely.
+    """
     engine = mem.get_default_engine()
     carried = ""
     if session_id:
@@ -142,16 +101,11 @@ def _inject_system(messages: list, system: str, *, session_id: str = "") -> list
             carried = sess.summary
     if not carried:
         carried = engine.extract_summary(messages)
-    non_summary_system = [
-        m for m in messages
-        if m.get("role") == "system" and not mem._looks_like_summary(mem._content_text(m))
-    ]
-    if non_summary_system and not carried:
-        return messages
     merged = engine.merge_summary(system, carried)
     out = [{"role": "system", "content": merged}]
     for m in messages:
         if m.get("role") == "system":
+            # Fold any non-summary system content the caller sent into ours.
             if not mem._looks_like_summary(mem._content_text(m)):
                 out[0]["content"] = out[0]["content"] + "\n\n" + mem._content_text(m)
             continue
@@ -215,6 +169,7 @@ def _tags_with_virtual() -> bytes:
         {"name": BROWSER_MODEL, "model": BROWSER_MODEL, "modified_at": "2026-01-01T00:00:00Z", "size": 0, "details": {"parameter_size": "7.6B", "family": "Browser cookies/storage reader"}},
         {"name": DEEP_MODEL, "model": DEEP_MODEL, "modified_at": "2026-01-01T00:00:00Z", "size": 0, "details": {"parameter_size": "19B", "family": "Deep reasoning agent (glm-4.7-flash)"}},
         {"name": AUTO_MODEL, "model": AUTO_MODEL, "modified_at": "2026-01-01T00:00:00Z", "size": 0, "details": {"parameter_size": "7.6B", "family": "Smart Router Agent"}},
+        {"name": VISION_MODEL_V, "model": VISION_MODEL_V, "modified_at": "2026-01-01T00:00:00Z", "size": 0, "details": {"parameter_size": "?", "family": "Multimodal vision agent (llava)"}},
     ]
     data["models"] = virtual + data.get("models", [])
     return json.dumps(data).encode()
@@ -402,6 +357,85 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"recent": _RECENT_STATS}).encode())
             return
 
+        # v4 Slice 1: Conversation sidebar — list known sessions or
+        # rehydrate one. /api/sessions returns most-recent-first session
+        # summaries; /api/sessions/<sid> returns the full turn history
+        # from the JSONL crash log.
+        if self.path == "/api/sessions":
+            try:
+                from core.conversation_store import get_store
+                sessions = sorted(
+                    get_store().all_sessions(),
+                    key=lambda s: s.last_seen,
+                    reverse=True,
+                )
+                payload = {"sessions": [
+                    {
+                        "sid": s.sid,
+                        "goal": s.goal,
+                        "last_seen": s.last_seen,
+                        "turn_count": s.turn_count,
+                        "last_profile": s.last_profile,
+                        "source": s.source,
+                    }
+                    for s in sessions[:50]
+                ]}
+            except Exception as e:
+                payload = {"error": str(e), "sessions": []}
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps(payload).encode())
+            return
+
+        if self.path.startswith("/api/sessions/"):
+            sid = self.path[len("/api/sessions/"):].split("?", 1)[0]
+            try:
+                from core.conversation_store import get_store
+                sess = get_store().get(sid)
+                if sess is None:
+                    self.send_response(404)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"error": "not found"}).encode())
+                    return
+                # Read JSONL events for transcript reconstruction.
+                jsonl = Path("data/sessions") / f"{sid}.jsonl"
+                events = []
+                if jsonl.exists():
+                    try:
+                        for line in jsonl.read_text(encoding="utf-8").splitlines():
+                            try:
+                                events.append(json.loads(line))
+                            except json.JSONDecodeError:
+                                continue
+                    except OSError:
+                        pass
+                payload = {
+                    "session": {
+                        "sid": sess.sid,
+                        "goal": sess.goal,
+                        "summary": sess.summary,
+                        "files_touched": sess.files_touched,
+                        "sticky": sess.sticky,
+                        "last_seen": sess.last_seen,
+                        "last_profile": sess.last_profile,
+                        "turn_count": sess.turn_count,
+                        "source": sess.source,
+                    },
+                    "events": events,
+                }
+            except Exception as e:
+                payload = {"error": str(e)}
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps(payload).encode())
+            return
+
         if self.path == "/api/healthcheck":
             try:
                 from core.healthcheck import run_all, to_dict
@@ -560,6 +594,52 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({"error": str(e)}).encode())
                 return
 
+        # v4 Slice 1: drag-and-drop file upload.
+        # Body shape: { "filename": "doc.pdf", "content_b64": "...", "session_id": "..." }
+        # Saves to data/uploads/<sid>/<filename>, returns the absolute path
+        # so the agent's first tool call can read_file / read_pdf / read_docx it.
+        if path == "/api/upload":
+            try:
+                import base64
+                filename = (payload.get("filename") or "").strip()
+                content_b64 = payload.get("content_b64") or ""
+                sid = (payload.get("session_id") or "default").strip() or "default"
+                if not filename or not content_b64:
+                    raise ValueError("filename and content_b64 are required")
+                # Sanitize filename — strip path separators.
+                filename = Path(filename).name
+                if not filename:
+                    raise ValueError("invalid filename after sanitization")
+                # Cap size at 30 MB to avoid OOM on large payloads.
+                raw = base64.b64decode(content_b64)
+                if len(raw) > 30 * 1024 * 1024:
+                    raise ValueError(f"file too large ({len(raw)} bytes; max 30 MB)")
+                uploads_dir = Path("data") / "uploads" / sid
+                uploads_dir.mkdir(parents=True, exist_ok=True)
+                dest = uploads_dir / filename
+                dest.write_bytes(raw)
+                abs_path = str(dest.resolve())
+                log.info(f"upload: {filename} ({len(raw)} bytes) -> {abs_path}", extra={"session_id": sid})
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    "ok": True,
+                    "path": abs_path,
+                    "filename": filename,
+                    "size": len(raw),
+                }).encode())
+                return
+            except Exception as e:
+                log.warning(f"upload failed: {e}")
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode())
+                return
+
         if path == "/api/memory/summarize":
             # Tier-1 in-session memory compression.
             # Client posts the oldest slice of chat history; we return a
@@ -695,12 +775,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
             return
 
         if model == CAD_MODEL and is_chat:
+            # v4 Slice 0.2: cad-rag now routes through the orchestrator like
+            # any other specialist. Agent calls `query_rag` itself when it
+            # needs retrieval — no more auto-injection.
             messages = _ensure_budget(payload.get("messages", []), session_id=sid)
-            user_q   = _last_user_msg(messages)
-            payload["messages"] = _inject_rag(messages, user_q, session_id=sid)
-            payload["model"]    = REAL_MODEL
-            raw = json.dumps(payload).encode()
-            self._forward_and_reply(path, raw, session_id=sid)
+            messages = pipeline.prepare(messages, base_system="")
+            user_q = _last_user_msg(messages)
+            self._run_agent_response(messages, {}, specialist="cad-rag-specialist", user_q=user_q, session_id=sid)
             return
 
         if model == UI_MODEL and is_chat:
@@ -735,6 +816,15 @@ class ProxyHandler(BaseHTTPRequestHandler):
             messages = _ensure_budget(payload.get("messages", []), session_id=sid)
             messages = pipeline.prepare(messages, BROWSER_SYSTEM)
             self._run_agent_response(messages, BROWSER_TOOLS, session_id=sid)
+            return
+
+        if model == VISION_MODEL_V and is_chat:
+            # v4 Slice 5: vision-agent routes through orchestrator using
+            # the vision-specialist profile.
+            messages = _ensure_budget(payload.get("messages", []), session_id=sid)
+            messages = pipeline.prepare(messages, base_system="")
+            user_q = _last_user_msg(messages)
+            self._run_agent_response(messages, {}, specialist="vision-specialist", user_q=user_q, session_id=sid)
             return
 
         if model == DEEP_MODEL and is_chat:

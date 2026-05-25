@@ -1,5 +1,36 @@
 # LocalHelpBot
 
+> **v4 (2026-05) — ChatGPT-grade UX, deep tools, self-learning.**
+> Building on the v3 reliability core:
+> - **Modern chat UI** — markdown + syntax highlighting (marked + highlight.js),
+>   conversation sidebar (`/api/sessions`), slash commands (`/new`, `/agent`,
+>   `/remember`, `/help`), drag-and-drop file upload, confidence badges,
+>   quick-action chips. Inline in [HelpBotUI/index.html](HelpBotUI/index.html).
+> - **Deep computer access** — `screenshot`, `clipboard_read/write`,
+>   `system_info` (CPU/RAM/GPU/disks/net), `open_with_default_app`,
+>   `list_windows` (Windows), `watch_file`, `find_in_files`, `read_env`.
+>   See [core/plugins/system_tools.py](core/plugins/system_tools.py).
+> - **Web/resource power** — `download_file`, `extract_text` (readability-style),
+>   `github_search_repos`, `github_read_file`, `github_releases`,
+>   `pypi_search`, `pypi_info`, `youtube_transcript`, `wikipedia_summary`.
+>   See [core/plugins/web_extras.py](core/plugins/web_extras.py).
+> - **Self-learning** — persistent `LessonsStore` ([core/lessons.py](core/lessons.py))
+>   injected into T1 of every system prompt; `save_lesson`, `learn_from_file`,
+>   `learn_from_url` tools (the latter two ingest content into the RAG corpus);
+>   `update_self` for `git pull --ff-only` on main; opt-in auto-capture of
+>   user corrections; opt-in auto-pull of missing Ollama models. Feature flags
+>   in [config.py](config.py): `LESSONS_AUTO_CAPTURE`, `UPDATE_SELF_ENABLED`,
+>   `OLLAMA_AUTO_PULL` (all default OFF).
+> - **Multimodal** — `describe_image` + `screenshot_and_describe` route to
+>   Ollama's vision model (default `llava:latest`, configurable via
+>   `VISION_MODEL`). New `vision-agent` virtual model.
+>   See [core/plugins/vision_tools.py](core/plugins/vision_tools.py).
+> - **Test suite** — 66 pytest tests covering memory, tool envelope,
+>   Stop-the-Line, config schema, files_touched, and lessons. Run via
+>   `python -m pytest tests/`.
+>
+> Total tool count: **46** (was 22 in v3).
+
 > **v3 (2026-05) — Reliability & UX upgrade.** Borrows patterns from
 > [openclaw](https://github.com/) and the
 > [How_AI_Learn](https://github.com/) skills collection:

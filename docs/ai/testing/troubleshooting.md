@@ -172,7 +172,79 @@ If the modal renders but the diff/command preview is empty, the tool may have se
 
 ---
 
-## 9. CoVe makes responses worse
+## 9. Drag-and-drop upload silently fails *(v4)*
+
+**Red flags:**
+- File dropped on chat input doesn't trigger an "Uploading…" message.
+- Or it uploads but the agent doesn't read the file.
+
+**Root cause:** the drag-and-drop handler is wired to `#input-wrap` ([HelpBotUI/index.html](../../../HelpBotUI/index.html)). If your file is > 30 MB or your browser's `dataTransfer.files` is empty (rare; usually because of a wonky drop source), the upload skips.
+
+**Fix:**
+- Check DevTools network for a `POST /api/upload` call. If absent, the drop target was missed — drop directly on the textarea, not anywhere else on the page.
+- For files > 30 MB, the server-side cap rejects them — split or compress first.
+- After upload succeeds, the input is pre-filled with `Read the attached file at <path> and `. Don't delete that prefix before sending; the agent needs the path.
+
+---
+
+## 10. Lessons don't seem to apply *(v4)*
+
+**Red flags:**
+- You ran `/remember always answer in Vietnamese` but the next session still replies in English.
+- `python -m core.healthcheck` shows "Lessons store writable: pass" — so the file works, but the lessons aren't being applied.
+
+**Root cause:** lessons are injected as a `<lessons_learned>` block in T1 of every agent's system prompt. They land in the prompt but small local models (≤ 7B) sometimes don't follow them without strong reinforcement.
+
+**Fix:**
+- Use stronger language in `/remember`: prefer imperative + "always" + specific behaviour ("Always reply in Vietnamese. Never English.").
+- For maximum effect, also set `LESSONS_AUTO_CAPTURE = True` in [config.py](../../../config.py) so corrections become lessons automatically.
+- Inspect `data/lessons.jsonl` directly — each line is a JSON record. If your entry isn't there, the `save_lesson` tool failed; check `proxy.log.jsonl` for the error.
+- To purge stale lessons: `python -c "from core.lessons import get_lessons_store; get_lessons_store().clear()"`.
+
+---
+
+## 11. `describe_image` says model not installed *(v4 — vision)*
+
+**Red flags:**
+- Any call to `describe_image` returns `FILE_NOT_FOUND` with hint "Run `ollama pull llava`".
+- Healthcheck shows: `Vision model llava:latest: WARN — not installed`.
+
+**Root cause:** the vision model isn't in your local Ollama. Vision is optional — the tool degrades gracefully but won't work until you install one.
+
+**Fix:**
+
+```powershell
+ollama pull llava           # ~4 GB
+# or a smaller variant:
+ollama pull llava-phi3      # ~2 GB
+# or a larger one:
+ollama pull llava:13b       # ~8 GB
+```
+
+Then update `VISION_MODEL` in [config.py](../../../config.py) to match what you pulled.
+
+---
+
+## 12. `update_self` refuses to run *(v4)*
+
+**Red flags:**
+- Calling `update_self` returns `PERMISSION_DENIED: update_self is disabled.`
+- Or it returns `dirty working tree — refuses to pull.`
+- Or `refuses to run on branch 'feature-x'`.
+
+**Root cause (by error):**
+1. **"disabled"** — `UPDATE_SELF_ENABLED = False` in config.py. By design — set to `True` to allow it.
+2. **"dirty working tree"** — you have uncommitted changes. The tool refuses to overwrite them.
+3. **"refuses to run on branch X"** — `update_self` only runs on the configured branch (default `main`).
+
+**Fix:**
+1. Set `UPDATE_SELF_ENABLED = True` in [config.py](../../../config.py) and restart the proxy.
+2. `git stash` (or commit) before invoking the tool.
+3. `git checkout main` first.
+
+---
+
+## 13. CoVe makes responses worse
 
 **Red flags:**
 - You enabled `"verify": "high"` on a profile and answers got *less* coherent or noticeably longer with no clear improvement.

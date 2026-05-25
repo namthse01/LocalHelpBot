@@ -223,6 +223,40 @@ def check_proxy_port(port: int, *, is_self: bool = False) -> CheckResult:
 # ───────────────────────────────────────────────────────────────────────
 
 
+def check_vision_model(base: str, vision_model: str) -> CheckResult:
+    """v4 Slice 5: vision model is OPTIONAL — warn instead of fail."""
+    if not vision_model:
+        return CheckResult(
+            name="Vision model (llava)", status="warn",
+            message="VISION_MODEL is empty — describe_image / vision-agent disabled.",
+        )
+    available = _ollama_models(base) or []
+    avail_norm = [m.lower() for m in available]
+    target = vision_model.lower()
+    if target in avail_norm or target.split(":")[0] in [a.split(":")[0] for a in avail_norm]:
+        return CheckResult(name=f"Vision model `{vision_model}`", status="pass", message="installed")
+    return CheckResult(
+        name=f"Vision model `{vision_model}`", status="warn",
+        message="not installed — describe_image will fail until you pull it",
+        detail=f"Run: `ollama pull {vision_model.split(':')[0]}`",
+    )
+
+
+def check_lessons_writable(path: Path) -> CheckResult:
+    """v4 Slice 4: lessons.jsonl must be writable."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        probe = path.parent / ".lessons-healthcheck"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        return CheckResult(name="Lessons store writable", status="pass", message=str(path))
+    except Exception as e:  # noqa: BLE001
+        return CheckResult(
+            name="Lessons store writable", status="fail",
+            message=f"cannot write to {path}: {e}",
+        )
+
+
 def run_all(*, is_self: bool = False) -> Tuple[str, List[CheckResult]]:
     """Run every check. Returns (overall_status, results).
 
@@ -232,13 +266,19 @@ def run_all(*, is_self: bool = False) -> Tuple[str, List[CheckResult]]:
       "red"    — at least one fail
     """
     from config import OLLAMA_BASE, CHAT_MODEL, EMBED_MODEL, LARGE_MODEL, PROXY_PORT
+    try:
+        from config import VISION_MODEL   # type: ignore
+    except Exception:
+        VISION_MODEL = ""   # noqa: N806
 
     results: List[CheckResult] = []
     results.append(check_ollama(OLLAMA_BASE))
     if results[-1].status != "fail":
         results.extend(check_models_present(OLLAMA_BASE, [CHAT_MODEL, EMBED_MODEL, LARGE_MODEL]))
+        results.append(check_vision_model(OLLAMA_BASE, VISION_MODEL))
     results.append(check_chroma_db(ROOT / "cad_db", EMBED_MODEL))
     results.append(check_sessions_dir(ROOT / "data" / "sessions"))
+    results.append(check_lessons_writable(ROOT / "data" / "lessons.jsonl"))
     results.append(check_proxy_port(PROXY_PORT, is_self=is_self))
 
     has_fail = any(r.status == "fail" for r in results)

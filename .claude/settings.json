@@ -10,7 +10,9 @@
       "Bash(git reset *)",
       "Bash(echo \"log content\")",
       "Bash(rm -f debug.log)",
-      "Bash(PYTHONIOENCODING=utf-8 python -)"
+      "Bash(PYTHONIOENCODING=utf-8 python -)",
+      "PowerShell($j = Start-Job -ScriptBlock { Set-Location \"d:\\\\Code\\\\yolo\\\\Claude_Code\\\\LocalHelpBot\"; .\\\\venv\\\\Scripts\\\\python.exe -m core.proxy 2>&1 }; Start-Sleep -Seconds 4; try { $tools = \\(Invoke-WebRequest -Uri \"http://localhost:11435/api/tags\" -UseBasicParsing -TimeoutSec 5\\).Content | ConvertFrom-Json; $tools.models | Where-Object { $_.size -eq 0 } | Select-Object name | Format-Table -AutoSize } catch { Write-Host \"FAIL: $_\" }; Stop-Job $j; Remove-Job $j -Force)",
+      "PowerShell(venv\\\\Scripts\\\\python.exe -m pytest tests/ -q 2>&1)"
     ]
   }
 }

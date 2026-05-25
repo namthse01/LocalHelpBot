@@ -32,8 +32,29 @@ LARGE_MODEL = "glm-4.7-flash:latest"
 # Changing this requires re-embedding cad_db/ from scratch.
 EMBED_MODEL = "mxbai-embed-large:latest"
 
+# ── Vision model (v4 Slice 5) ──────────────────────────────────
+# Used by describe_image / screenshot_and_describe. Install via
+# `ollama pull llava`. Leave as-is even if llava isn't installed —
+# the tools degrade gracefully with a clear install hint.
+VISION_MODEL = "llava:latest"
+
 # ── Port of the proxy ──────────────────────────────────────────
 PROXY_PORT = 11435
+
+# ── Self-learning feature flags (v4 Slice 4) ───────────────────
+# Auto-capture: detect "no/don't/actually" style corrections and save
+# them as lessons. Off by default — users can flip it on after seeing
+# how the lessons feature works.
+LESSONS_AUTO_CAPTURE = False
+
+# update_self tool: allow `git pull --ff-only` on main from inside the
+# agent. Disabled by default — full self-modification is high risk.
+UPDATE_SELF_ENABLED = False
+
+# Auto-pull missing Ollama models: when a chat hits a 404 because the
+# requested model isn't installed, prompt the user to `ollama pull` it.
+# Off by default; on for the convenience win.
+OLLAMA_AUTO_PULL = False
 
 # ── Model Provider Configuration ───────────────────────────────
 # Primary is tried first; on token-exhaust / error / 401 we fall
@@ -147,6 +168,19 @@ AGENT_PROFILES = {
             "python_exec", "list_processes", "kill_process",
             "install_package",
             "read_file_chunk", "read_pdf", "write_pdf", "read_docx", "write_docx",
+            # v4 Slice 3 — web/resource tools
+            "download_file", "extract_text",
+            "github_search_repos", "github_read_file", "github_releases",
+            "pypi_search", "pypi_info",
+            "youtube_transcript", "wikipedia_summary",
+            # v4 Slice 2 — deep computer-access tools
+            "screenshot", "clipboard_read", "clipboard_write", "system_info",
+            "open_with_default_app", "list_windows", "watch_file",
+            "find_in_files", "read_env",
+            # v4 Slice 4 — self-learning tools
+            "save_lesson", "learn_from_file", "learn_from_url", "update_self",
+            # v4 Slice 5 — vision
+            "describe_image", "screenshot_and_describe",
         ],
         "verify": "off",  # Slice 5 enables CoVe wrapper when set to "high"
     },
@@ -162,7 +196,13 @@ AGENT_PROFILES = {
             "`search_web` + `fetch_url`. Cite every fact with its source."
         ),
         "model": "glm-4.7-flash:latest",
-        "tools": ["read_file", "list_dir", "search_web", "fetch_url", "query_rag"],
+        "tools": [
+            "read_file", "list_dir",
+            "search_web", "fetch_url", "query_rag",
+            # v4 Slice 3 — web/resource tools (researcher is the prime consumer)
+            "extract_text", "github_search_repos", "github_read_file", "github_releases",
+            "pypi_search", "pypi_info", "youtube_transcript", "wikipedia_summary",
+        ],
         "verify": "off",
     },
     "coder": {
@@ -173,7 +213,12 @@ AGENT_PROFILES = {
         ),
         "system_prompt": "You are a Code Analysis Specialist. Focus on implementation details, patterns, and bug hunting.",
         "model": "qwen3.5:latest",
-        "tools": ["read_file", "list_dir", "search_web"],
+        "tools": [
+            "read_file", "list_dir", "search_web", "grep_file", "glob_files",
+            "read_file_chunk",
+            # v4 Slice 2: read-only system-info tools for context (no destructive ops)
+            "system_info", "find_in_files",
+        ],
         "verify": "off",
     },
     "summarizer": {
@@ -184,6 +229,61 @@ AGENT_PROFILES = {
         "system_prompt": "You are a Summary Specialist. Take complex information and turn it into a concise, bulleted summary for Discord.",
         "model": "qwen3.5:latest",
         "tools": [],
+        "verify": "off",
+    },
+    # v4 Slice 5: vision-specialist profile. Reached via `vision-agent`
+    # virtual model in core/proxy.py. Defaults its model to VISION_MODEL
+    # (llava) so it speaks multimodal directly.
+    "vision-specialist": {
+        "description": (
+            "Multimodal vision specialist — reads images directly. "
+            "Use when the user uploads an image, a screenshot, or asks "
+            "you to look at something visual."
+        ),
+        "system_prompt": (
+            "You are a vision-capable assistant. The user has shared "
+            "an image (path passed in the conversation). Your job:\n"
+            "  1. Call `describe_image` (or `screenshot_and_describe`) "
+            "with the path the user provided.\n"
+            "  2. Read the description and answer the user's actual "
+            "question about the image — error messages, UI elements, "
+            "diagrams, text content, etc.\n"
+            "  3. If `describe_image` returns FILE_NOT_FOUND for the "
+            "vision model, tell the user to `ollama pull llava` (or set "
+            "config.VISION_MODEL to a model they have).\n"
+        ),
+        "model": "qwen3.5:latest",   # main agent stays a text model;
+                                      # the vision *tool* does the vision call.
+        "tools": [
+            "read_file", "list_dir",
+            "describe_image", "screenshot_and_describe",
+        ],
+        "verify": "off",
+    },
+    # Routed to by the cad-rag virtual model. Agentic RAG: the agent
+    # CHOOSES when to call query_rag, instead of having it pre-injected.
+    # (Replaces the legacy _inject_rag path in core/proxy.py.)
+    "cad-rag-specialist": {
+        "description": (
+            "CAD / AutoCAD knowledge specialist — queries the local RAG corpus. "
+            "Reached via the `cad-rag` virtual model."
+        ),
+        "system_prompt": (
+            "You are a CAD/AutoCAD knowledge assistant. Your knowledge base is "
+            "the local RAG corpus accessed via the `query_rag` tool.\n\n"
+            "Rules:\n"
+            "1. For CAD-related questions: CALL `query_rag` first with a focused query. "
+            "Read the returned chunks (each has a score and source file).\n"
+            "2. If `query_rag` returns 'NO_DATA' or all scores are below 0.4, say "
+            "\"the local knowledge base has insufficient data on this\" and STOP. "
+            "Do NOT fabricate answers from base model knowledge.\n"
+            "3. When chunks are good, CITE the source file(s) in your answer and "
+            "include the score for transparency.\n"
+            "4. For non-CAD questions, briefly say you only cover CAD topics and "
+            "suggest the user switch to another agent."
+        ),
+        "model": "qwen3.5:latest",
+        "tools": ["query_rag", "read_file", "list_dir"],
         "verify": "off",
     },
 }

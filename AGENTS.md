@@ -17,6 +17,7 @@ Pick by what the task needs, not by what sounds cool. The router (`auto-agent`) 
 | `web-creep`       | `CHAT_MODEL`          | Agent loop + WEB_TOOLS       | Multi-source web research without filesystem access.                     | Anything that needs to write files |
 | `browser-agent`   | `CHAT_MODEL`          | Agent loop + BROWSER_TOOLS   | Reading local Chrome/Edge cookies, history, storage.                     | General chat                       |
 | `deep-agent`      | `LARGE_MODEL`         | Forward (no tools)           | Heavy reasoning when you have a bigger model installed.                  | Anything tool-driven (no agent loop) |
+| `vision-agent`    | `CHAT_MODEL` + vision tool | Orchestrator (`vision-specialist`) | Reading screenshots / diagrams / UI mockups / error dialogs. Routes through `describe_image` (default `llava:latest`). | Pure text Q&A — use `auto-agent` |
 
 ---
 
@@ -53,6 +54,14 @@ Reads local Chrome/Edge cookies and storage via `BROWSER_TOOLS` (defined in `cor
 
 ### `deep-agent`
 Forwards directly to `LARGE_MODEL` (e.g. `glm-4.7-flash:latest`) — no agent loop, no tools. Use when you want raw reasoning power on a question and don't need tool execution. If `LARGE_MODEL` is empty in `config.py`, this model falls back to `CHAT_MODEL`.
+
+### `vision-agent` *(v4)*
+Routes through the `vision-specialist` profile. The text model (default `qwen3.5`) drives the loop, and the vision-specific work happens via two tools (`describe_image`, `screenshot_and_describe`) that call Ollama's `llava` (or whatever you set as `VISION_MODEL`).
+
+**Example prompt:**
+> *"I just dropped `screenshot.png` into the chat — what's the error message in the dialog?"*
+
+**Gotcha:** if `llava` isn't installed, the tool returns a clear hint ("Run `ollama pull llava`"). The healthcheck warns rather than failing — vision is optional.
 
 ---
 

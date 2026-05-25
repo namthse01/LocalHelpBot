@@ -36,7 +36,7 @@ import json
 import threading
 import time
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -306,7 +306,7 @@ def derive_session_id(
         # salt keeps these short-lived.
         first = "(empty)"
 
-    salt = day_salt or datetime.utcnow().strftime("%Y-%m-%d")
+    salt = day_salt or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     digest = hashlib.sha1(f"{first}\n{salt}".encode("utf-8")).hexdigest()
     return digest[:16]
 

@@ -422,7 +422,17 @@ def run_agent(
     tools: ToolsArg,
     stream_cb: Optional[Callable] = None,
     max_turns: int = MAX_TURNS,
+    *,
+    session_id: Optional[str] = None,
 ) -> str:
+    """Run the agent loop.
+
+    `session_id` (optional) is used to propagate `ToolResult.meta["files_touched"]`
+    into the conversation store so the context engine's T2 tier can render
+    "files touched this session" in subsequent turns. None means the call
+    came from a non-session context (legacy run_agent direct invocation);
+    file tracking just no-ops in that case.
+    """
     conversation = list(messages)
     error_streak = 0
     tool_uid = 0
@@ -576,6 +586,18 @@ def run_agent(
                 all_errors = False
                 if name in _write_tools:
                     _write_done = True
+                # Slice 0.1: propagate files_touched into the session store so
+                # the context engine's T2 tier can show "files touched this
+                # session" in subsequent turns. No-op if no session_id (legacy
+                # callers) or the tool didn't report files_touched.
+                if session_id:
+                    touched = result.meta.get("files_touched") if result.meta else None
+                    if touched:
+                        try:
+                            from core.conversation_store import get_store
+                            get_store().note(session_id, files_touched=list(touched))
+                        except Exception as e:  # noqa: BLE001
+                            logger.debug(f"files_touched propagation failed: {e}")
 
             _emit(stream_cb, {
                 "type": "tool_result",

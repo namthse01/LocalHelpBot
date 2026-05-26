@@ -72,7 +72,10 @@ Hệ thống AI Multi-Agent chạy local, kết hợp RAG + Agentic Loop tự s�
 git clone <repo-url> && cd TheAgent0
 
 # Pull models
-ollama pull qwen3.5 && ollama pull mxbai-embed-large && ollama pull glm-4.7-flash
+ollama pull huihui_ai/qwen2.5-abliterate:7b && ollama pull mxbai-embed-large && ollama pull glm-4.7-flash
+# (The default CHAT_MODEL is an abliterated Qwen 2.5 — refusals removed at the
+# weights level, intended for single-user local use. Swap models any time —
+# see "Switching chat model" below.)
 
 # Python venv (Windows)
 python -m venv venv && venv\Scripts\activate
@@ -102,6 +105,41 @@ RAG dim, sessions dir, and port:
 
 Output is a colored pass/fail/warn table. The Web UI shows the same
 banner at the top of the **Change Mode** tab.
+
+### Image generation (optional)
+
+The `generate_image` tool calls a local **AUTOMATIC1111 Stable Diffusion
+WebUI** at `http://127.0.0.1:7860`. It's dormant until A1111 is running.
+
+One-time setup:
+
+```bash
+git clone https://github.com/AUTOMATIC1111/stable-diffusion-webui
+cd stable-diffusion-webui
+# Drop a .safetensors / .ckpt checkpoint into models/Stable-diffusion/
+```
+
+Enable the API — edit `webui-user.bat` (Windows) and set:
+
+```
+set COMMANDLINE_ARGS=--api
+```
+
+Then launch with `webui-user.bat`. When you see
+`Running on local URL: http://127.0.0.1:7860`, ask the bot:
+
+> generate an image of a forest at dawn, 768x512
+
+PNGs land under `data/generated/sd-<timestamp>.png`. Override the
+endpoint via `A1111_BASE` in `config.py` if you run A1111 elsewhere.
+
+### Switching chat model
+
+The default is `huihui_ai/qwen2.5-abliterate:7b`. To swap, edit
+`CHAT_MODEL` in [config.py](config.py) (one place — all 5 agent profiles
+reference the constant), OR override at runtime without touching source
+by adding a key to `runtime_overrides.json`. The runtime override is
+parsed at config.py:337-342 and beats the source default.
 
 ### Agent catalog
 

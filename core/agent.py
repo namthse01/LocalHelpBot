@@ -27,11 +27,12 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import operator as _op
 import re
 import sys
 import time as _time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from core.providers import smart_provider
@@ -342,9 +343,23 @@ def _extract_digest(body: str, limit: int = MICRO_COMPACT_DIGEST_CHARS) -> str:
 
 
 def _micro_compact(conversation: List[Dict[str, Any]]) -> int:
-    """Replace old verbose tool_result bodies with a placeholder + digest."""
+    """Replace old verbose tool_result bodies with a placeholder + digest.
+
+    Defense-in-depth: never touch the last assistant message in the
+    conversation. The current implementation only mutates user-role
+    messages with `<tool_result>` blocks, but if compaction ever extends
+    to assistant turns we want to keep the most recent final answer
+    around — it's the anchor for "our last result" reference resolution.
+    """
+    last_assistant_idx = -1
+    for i in range(len(conversation) - 1, -1, -1):
+        if conversation[i].get("role") == "assistant":
+            last_assistant_idx = i
+            break
     tool_feedback_indices: List[int] = []
     for i, m in enumerate(conversation):
+        if i == last_assistant_idx:
+            continue
         if m.get("role") != "user":
             continue
         body = m.get("content", "")
@@ -413,6 +428,122 @@ def _format_results(results: List[Dict[str, Any]], all_errors: bool) -> str:
 
 
 # ───────────────────────────────────────────────────────────────────────
+# Recent-exchange capture & arithmetic fast-path
+# ───────────────────────────────────────────────────────────────────────
+
+# Matches "+ 4", "- 2.5", "* 10", "/3" — operator followed by a number,
+# possibly with whitespace, nothing else on the line.
+_FASTPATH_RE = re.compile(r"^\s*([+\-*/])\s*(-?\d+(?:\.\d+)?)\s*$")
+
+# Matches any number in a string. Vietnamese / European thousand separators
+# use "." and decimal commas; English uses commas as thousand separators.
+# We accept both by stripping commas before float() and treating "," as the
+# decimal point only when it's the LAST grouping in the token.
+_NUMBER_RE = re.compile(r"-?\d{1,3}(?:[.,]\d{3})*(?:[.,]\d+)?|-?\d+(?:[.,]\d+)?")
+
+_FASTPATH_OPS = {
+    "+": _op.add,
+    "-": _op.sub,
+    "*": _op.mul,
+    "/": _op.truediv,
+}
+
+
+def _parse_number_token(tok: str) -> Optional[float]:
+    """Parse a number that may use comma or dot as decimal/thousand separator."""
+    if not tok:
+        return None
+    # Strategy: if both `,` and `.` appear, treat the LAST one as the decimal
+    # and the others as grouping. If only one appears with 3 digits after it,
+    # it's a thousand separator; otherwise it's the decimal point.
+    last_dot = tok.rfind(".")
+    last_com = tok.rfind(",")
+    if last_dot >= 0 and last_com >= 0:
+        if last_dot > last_com:
+            cleaned = tok.replace(",", "")
+        else:
+            cleaned = tok.replace(".", "").replace(",", ".")
+    elif last_com >= 0:
+        # only commas
+        tail = tok[last_com + 1:]
+        if len(tail) == 3 and tail.isdigit():
+            cleaned = tok.replace(",", "")  # thousand grouping
+        else:
+            cleaned = tok.replace(",", ".")  # decimal
+    elif last_dot >= 0:
+        # only dots — assume decimal point
+        cleaned = tok
+    else:
+        cleaned = tok
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def _extract_last_number(text: str) -> Optional[float]:
+    """Return the LAST number that appears in `text`, or None if none found.
+
+    Used to capture the numeric answer from an assistant turn like
+    "1+1 = 2" → 2.0 or "the total is 1,234.5" → 1234.5.
+    """
+    if not text:
+        return None
+    matches = _NUMBER_RE.findall(text)
+    for tok in reversed(matches):
+        val = _parse_number_token(tok)
+        if val is not None:
+            return val
+    return None
+
+
+def _last_user_message(messages: List[Dict[str, Any]]) -> str:
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            c = m.get("content", "")
+            if isinstance(c, list):
+                return " ".join(
+                    p.get("text", "") for p in c
+                    if isinstance(p, dict) and p.get("type") == "text"
+                )
+            return str(c or "")
+    return ""
+
+
+def _try_arithmetic_fastpath(user_msg: str, prev_numeric: Optional[float]) -> Optional[str]:
+    """If `user_msg` is a pure operator-leading expression (e.g. "+ 4") and
+    `prev_numeric` is known, evaluate and return a formatted answer.
+    Returns None when the message doesn't qualify or no anchor exists."""
+    if prev_numeric is None or not user_msg:
+        return None
+    m = _FASTPATH_RE.match(user_msg)
+    if not m:
+        return None
+    op_sym, operand_tok = m.group(1), m.group(2)
+    try:
+        operand = float(operand_tok)
+    except ValueError:
+        return None
+    fn = _FASTPATH_OPS.get(op_sym)
+    if fn is None:
+        return None
+    if op_sym == "/" and operand == 0.0:
+        return f"{_fmt_num(prev_numeric)} / 0 = undefined (cannot divide by zero)"
+    try:
+        result = fn(prev_numeric, operand)
+    except (ZeroDivisionError, OverflowError, ValueError) as e:
+        return f"{_fmt_num(prev_numeric)} {op_sym} {operand_tok} = error ({e})"
+    return f"{_fmt_num(prev_numeric)} {op_sym} {_fmt_num(operand)} = {_fmt_num(result)}"
+
+
+def _fmt_num(x: float) -> str:
+    """Render a float without trailing ".0" when it's whole."""
+    if x == int(x) and abs(x) < 1e16:
+        return str(int(x))
+    return f"{x:g}"
+
+
+# ───────────────────────────────────────────────────────────────────────
 # Main loop
 # ───────────────────────────────────────────────────────────────────────
 
@@ -455,6 +586,41 @@ def run_agent(
     _write_done = False
     _write_nudge_count = 0
     _parse_retry_count = 0
+
+    # ── Arithmetic fast-path ─────────────────────────────────────────
+    # If the user's latest message is a pure operator-leading expression
+    # (e.g. "+ 4") and the session has a numeric anchor from the previous
+    # answer, compute it deterministically and return — no LLM call.
+    if session_id:
+        try:
+            from core.conversation_store import get_store as _get_store
+            _sess = _get_store().get(session_id)
+        except Exception:  # noqa: BLE001
+            _sess = None
+        if _sess is not None and _sess.last_numeric_value is not None:
+            _last_user = _last_user_message(messages)
+            _fp = _try_arithmetic_fastpath(_last_user, _sess.last_numeric_value)
+            if _fp is not None:
+                logger.info(
+                    "[agent] math fast-path: %s (anchor=%s)",
+                    _fp, _sess.last_numeric_value,
+                )
+                _emit(stream_cb, {"type": "status", "text": "arithmetic fast-path"})
+                _emit(stream_cb, {
+                    "type": "final",
+                    "text": _fp,
+                    "total_ms": int((_time.perf_counter() - t_start) * 1000),
+                    "turns": 0,
+                })
+                try:
+                    _get_store().note(
+                        session_id,
+                        last_short_answer=_fp,
+                        last_numeric_value=_extract_last_number(_fp),
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.debug(f"fast-path note_answer failed: {e}")
+                return _fp
 
     for turn in range(max_turns):
         if turn >= MICRO_COMPACT_TURNS:
@@ -522,6 +688,19 @@ def run_agent(
             total_ms = int((_time.perf_counter() - t_start) * 1000)
             logger.info(f"[agent] DONE in {turn+1} turn(s), {total_ms}ms total")
             _emit(stream_cb, {"type": "final", "text": content, "total_ms": total_ms, "turns": turn + 1})
+            if session_id:
+                try:
+                    from core.conversation_store import get_store as _get_store
+                    _stripped = (content or "").strip()
+                    _short = _stripped[-200:] if _stripped else ""
+                    _num = _extract_last_number(_stripped)
+                    _get_store().note(
+                        session_id,
+                        last_short_answer=_short,
+                        last_numeric_value=_num,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.debug(f"final-answer capture failed: {e}")
             return content
 
         _parse_retry_count = 0

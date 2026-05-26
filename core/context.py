@@ -219,6 +219,22 @@ def _render_t2_session(session: Optional[Session]) -> str:
         lines.append("  sticky_decisions:")
         for k, v in session.sticky.items():
             lines.append(f"    {k}: {v}")
+    # <recent_exchange> sits at the END of T2 so it's closest to the
+    # model's recency window. Drives pronoun resolution ("our last
+    # result", "that") on the next turn. Skipped entirely when both
+    # slots are empty so fresh sessions stay quiet.
+    if session.last_short_answer or session.last_numeric_value is not None:
+        lines.append("  recent_exchange:")
+        if session.last_short_answer:
+            short = session.last_short_answer.replace("\n", " ").strip()
+            if len(short) > 240:
+                short = "…" + short[-240:]
+            short = short.replace('"', "'")
+            lines.append(f'    last_assistant_answer: "{short}"')
+        if session.last_numeric_value is not None:
+            v = session.last_numeric_value
+            num_str = str(int(v)) if v == int(v) and abs(v) < 1e16 else f"{v:g}"
+            lines.append(f"    last_numeric_value: {num_str}")
     if not lines:
         return ""
     return "<session>\n" + "\n".join(lines) + "\n</session>"

@@ -82,6 +82,13 @@ class Session:
     # Turn counter — incremented by record_turn().
     turn_count: int = 0
 
+    # Last assistant final answer (short string) and the last numeric value
+    # extracted from it. Drive the <recent_exchange> block in T2 so the
+    # next turn can resolve pronouns ("our last result", "that") and the
+    # arithmetic fast-path can evaluate operator-leading follow-ups.
+    last_short_answer: Optional[str] = None
+    last_numeric_value: Optional[float] = None
+
     # ── mutators ────────────────────────────────────────────────────
     def note_user_goal(self, msg: str) -> None:
         if self.goal:
@@ -114,6 +121,21 @@ class Session:
 
     def update_summary(self, summary: str) -> None:
         self.summary = (summary or "").strip()
+
+    def note_answer(self, short: Optional[str], numeric: Optional[float]) -> None:
+        """Record the assistant's most recent final answer.
+
+        `short` (trimmed to 200 chars) is always overwritten when non-empty.
+        `numeric` is only overwritten when a number was actually extracted
+        from this turn's answer — so a non-numeric follow-up doesn't erase
+        a still-relevant prior value the user might reference next.
+        """
+        if short:
+            cleaned = short.strip()
+            if cleaned:
+                self.last_short_answer = cleaned[-200:]
+        if numeric is not None:
+            self.last_numeric_value = float(numeric)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -165,7 +187,8 @@ class ConversationStore:
         """Apply changes and persist a single event line.
 
         Supported keys: goal, summary, files_touched (append list),
-        sticky (dict merge), profile, source.
+        sticky (dict merge), profile, source, last_short_answer,
+        last_numeric_value.
         """
         with self._lock:
             sess = self._sessions.get(sid)
@@ -188,6 +211,15 @@ class ConversationStore:
             if "profile" in changes:
                 sess.record_turn(changes["profile"])
                 event["profile"] = changes["profile"]
+            if "last_short_answer" in changes or "last_numeric_value" in changes:
+                sess.note_answer(
+                    changes.get("last_short_answer"),
+                    changes.get("last_numeric_value"),
+                )
+                if sess.last_short_answer is not None:
+                    event["last_short_answer"] = sess.last_short_answer
+                if sess.last_numeric_value is not None:
+                    event["last_numeric_value"] = sess.last_numeric_value
             self._append_event(sess, event)
 
     def all_sessions(self) -> List[Session]:
@@ -238,6 +270,11 @@ class ConversationStore:
                             sess.set_sticky(k, v)
                     if "profile" in ev:
                         sess.record_turn(ev["profile"])
+                    if "last_short_answer" in ev or "last_numeric_value" in ev:
+                        sess.note_answer(
+                            ev.get("last_short_answer"),
+                            ev.get("last_numeric_value"),
+                        )
             return sess
         except OSError:
             return None

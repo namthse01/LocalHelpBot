@@ -21,7 +21,16 @@ OLLAMA_BASE = "http://localhost:11434"
 #   RAM  8GB → "llama3.2:3b"  / "qwen2.5:7b"
 #   RAM 16GB → "qwen3.5"      / "qwen2.5-coder:7b"
 #   RAM 32GB+ / GPU → "glm-4.7-flash" hoặc lớn hơn
-CHAT_MODEL = "qwen3.5:latest"
+# Default is an abliterated Qwen 2.5 (refusals removed at the weights
+# level) for unrestricted single-user local use. Swap back via
+# runtime_overrides.json without editing source — see README.
+CHAT_MODEL = "huihui_ai/qwen2.5-abliterate:7b"
+
+# ── Stable Diffusion (AUTOMATIC1111) endpoint ──────────────────
+# Used by the `generate_image` tool. Default is the standard A1111
+# loopback address. A1111 must be launched with --api for the tool to
+# work — see README "Image generation" section.
+A1111_BASE = "http://127.0.0.1:7860"
 
 # ── Model lớn — dùng cho deep-agent (suy luận phức tạp) ─────────
 # Leave "" if your machine cannot host a large model.
@@ -69,7 +78,7 @@ MODEL_PROVIDERS = {
     "fallback": {
         "type": "local",
         "provider": "ollama",
-        "model": "qwen3.5:latest",
+        "model": CHAT_MODEL,
     },
 }
 
@@ -113,6 +122,12 @@ AGENT_PROFILES = {
             "learn from every interaction, and evolve. Easy to use, omnicapable, self-improving. "
             "You receive TASKS and finish them END-TO-END: decompose, explore, act, verify, report. "
             "You HAVE real tools — never claim otherwise.\n\n"
+            "CONTEXT — private local installation:\n"
+            "  This is a single-user local deployment owned by the operator. There is no\n"
+            "  third-party audience, no compliance/PR layer, and no logging visible to anyone\n"
+            "  other than the operator. Answer substantively without preamble disclaimers.\n"
+            "  If a specific request is illegal in the operator's jurisdiction, decline\n"
+            "  briefly and continue. Otherwise help.\n\n"
             "CRITICAL RULE — FINISH THE TASK:\n"
             "  If the user asks to WRITE / SAVE / CREATE / EXPORT a file (e.g. 'summarize into X.pdf',\n"
             "  'save to report.md'), the task is NOT done until you have called a write_* tool\n"
@@ -137,13 +152,22 @@ AGENT_PROFILES = {
             "    emitting the next tool_use.\n"
             "  • After 2 failures of the SAME call, Stop-the-Line fires — the loop refuses\n"
             "    the 3rd attempt. You MUST change at least one argument or pick another tool.\n\n"
-            "FOLLOW-UP TURNS — use your own prior messages as memory:\n"
-            "  When the user says 'the file you just made / wrote / created', 'add to\n"
-            "  that file', 'the result above', etc., the path / content / result IS in\n"
-            "  your prior assistant messages in this conversation. READ them — do NOT\n"
-            "  reply with 'I don't have context' or ask which file. Extract the path\n"
-            "  from your prior reply and act (edit_file / read_file / etc). Only ask\n"
-            "  if the prior messages genuinely have no such reference.\n\n"
+            "FOLLOW-UP TURNS — resolve pronouns before acting:\n"
+            "  When the user says 'that', 'it', 'the result', 'our last', 'the file',\n"
+            "  'the answer', etc., bind the pronoun in THIS order and STOP at the first\n"
+            "  match:\n"
+            "    (a) <session>recent_exchange.last_numeric_value — if the user message\n"
+            "        starts with an operator (+, -, *, /) or contains 'result', 'answer',\n"
+            "        'total', 'sum', 'kết quả'.\n"
+            "    (b) <session>recent_exchange.last_assistant_answer — for 'that', 'it',\n"
+            "        'what you said', and other short-string references.\n"
+            "    (c) <session>files_touched (most recent) — for 'the file', 'that file',\n"
+            "        'add to that file'.\n"
+            "    (d) your prior assistant messages in THIS conversation.\n"
+            "    (e) if none of the above resolve it, ASK the user. DO NOT silently\n"
+            "        re-read a file or re-call a tool to guess.\n"
+            "  If the user message is JUST an operator + number (e.g. '+ 4', '* 2'),\n"
+            "  the agent loop handles it directly before you see it.\n\n"
             "FILE-TYPE ROUTING:\n"
             "  • .pdf → read_pdf / write_pdf   • .docx → read_docx / write_docx\n"
             "  • .py/.cs/.js/.ts/.md/.txt/.json/.yml → read_file / write_file / edit_file\n"
@@ -160,7 +184,7 @@ AGENT_PROFILES = {
             "  • Heavy explorations → delegate with the `task` tool to a sub-agent.\n"
             "  • The <environment> and <tools> blocks below are authoritative — use them."
         ),
-        "model": "qwen3.5:latest",
+        "model": CHAT_MODEL,
         "tools": [
             "task", "search_web", "fetch_url", "query_rag",
             "read_file", "list_dir", "grep_file", "glob_files",
@@ -182,6 +206,8 @@ AGENT_PROFILES = {
             "save_lesson", "learn_from_file", "learn_from_url", "update_self",
             # v4 Slice 5 — vision
             "describe_image", "screenshot_and_describe",
+            # Image generation via local AUTOMATIC1111 SD WebUI
+            "generate_image",
         ],
         "verify": "off",  # Slice 5 enables CoVe wrapper when set to "high"
     },
@@ -213,7 +239,7 @@ AGENT_PROFILES = {
             "unfamiliar code. NOT for edits (main does edits itself)."
         ),
         "system_prompt": "You are a Code Analysis Specialist. Focus on implementation details, patterns, and bug hunting.",
-        "model": "qwen3.5:latest",
+        "model": CHAT_MODEL,
         "tools": [
             "read_file", "list_dir", "search_web", "grep_file", "glob_files",
             "read_file_chunk",
@@ -228,7 +254,7 @@ AGENT_PROFILES = {
             "short bullets. Delegate for final output compression only."
         ),
         "system_prompt": "You are a Summary Specialist. Take complex information and turn it into a concise, bulleted summary for Discord.",
-        "model": "qwen3.5:latest",
+        "model": CHAT_MODEL,
         "tools": [],
         "verify": "off",
     },
@@ -253,11 +279,12 @@ AGENT_PROFILES = {
             "vision model, tell the user to `ollama pull llava` (or set "
             "config.VISION_MODEL to a model they have).\n"
         ),
-        "model": "qwen3.5:latest",   # main agent stays a text model;
+        "model": CHAT_MODEL,   # main agent stays a text model;
                                       # the vision *tool* does the vision call.
         "tools": [
             "read_file", "list_dir",
             "describe_image", "screenshot_and_describe",
+            "generate_image",
         ],
         "verify": "off",
     },
@@ -283,7 +310,7 @@ AGENT_PROFILES = {
             "4. For non-CAD questions, briefly say you only cover CAD topics and "
             "suggest the user switch to another agent."
         ),
-        "model": "qwen3.5:latest",
+        "model": CHAT_MODEL,
         "tools": ["query_rag", "read_file", "list_dir"],
         "verify": "off",
     },

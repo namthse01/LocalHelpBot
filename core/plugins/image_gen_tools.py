@@ -1,54 +1,120 @@
-"""Image generation via local AUTOMATIC1111 Stable Diffusion WebUI.
+"""Image generation via in-process Hugging Face `diffusers`.
 
-Exposes a `generate_image` tool that POSTs prompts to /sdapi/v1/txt2img
-on the configured A1111 endpoint (default http://127.0.0.1:7860) and
-writes the resulting PNG into ./data/generated/.
+Exposes a `generate_image` tool that loads a Stable Diffusion / SDXL
+pipeline from a configurable HuggingFace model id and writes the
+resulting PNG(s) into `./data/generated/`.
 
-A1111 must be running with `--api` for this tool to succeed; otherwise
-the tool returns a clear ToolResult.error pointing at the install
-walkthrough in the README.
+The pipeline is lazily loaded on the FIRST call (~30-90 s while the
+weights download from HF and load onto the device) and cached
+module-level for subsequent calls. Swapping `config.SD_MODEL_ID`
+triggers a re-load on the next call.
 
-Endpoint can be overridden via `config.A1111_BASE` if the user runs A1111
-on a different host/port. We resolve it lazily so a missing config attr
-just falls back to the default.
+Dependencies (OPTIONAL — not in requirements.txt; the tool reports a
+clean install hint if they're missing):
 
-Mirrors the urllib POST style used by core/plugins/vision_tools.py.
+    pip install diffusers transformers torch accelerate safetensors
+
+For NVIDIA GPU acceleration on Windows:
+
+    pip install torch --index-url https://download.pytorch.org/whl/cu121
+
+Safety: `safety_checker=None` and `requires_safety_checker=False` are
+deliberately set because this is a private single-user local install.
+The built-in diffusers NSFW filter would otherwise blur output for
+adult creative work the operator has opted into.
 """
 from __future__ import annotations
 
-import base64
-import json
 import logging
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from core.tool_schema import ErrorCode, Tool, ToolRegistry, ToolResult
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_A1111_BASE = "http://127.0.0.1:7860"
+_DEFAULT_SD_MODEL = "stabilityai/sdxl-turbo"
 GENERATED_DIR = Path("data/generated")
 
-DEFAULTS = {
-    "steps": 20,
-    "width": 512,
-    "height": 512,
-    "cfg_scale": 7.0,
-    "sampler_name": "Euler a",
-    "negative_prompt": "",
-}
-TIMEOUT_SEC = 300  # SD generation can take a while on CPU; generous cap
+# Lazy-loaded module-level cache.
+_PIPELINE = None
+_PIPELINE_ID: Optional[str] = None
 
 
-def _a1111_base() -> str:
+def _sd_model_id() -> str:
     try:
-        from config import A1111_BASE  # type: ignore
-        return (A1111_BASE or "").strip() or _DEFAULT_A1111_BASE
+        from config import SD_MODEL_ID  # type: ignore
+        return (SD_MODEL_ID or "").strip() or _DEFAULT_SD_MODEL
     except Exception:
-        return _DEFAULT_A1111_BASE
+        return _DEFAULT_SD_MODEL
+
+
+def _ensure_pipeline(target: str):
+    """Load (or reuse) a diffusers pipeline for `target` model id.
+
+    Raises RuntimeError with an install-hint message if diffusers/torch
+    aren't installed. The handler catches that and returns a clean
+    ToolResult.error so the agent can report it without crashing the loop.
+    """
+    global _PIPELINE, _PIPELINE_ID
+    if _PIPELINE is not None and _PIPELINE_ID == target:
+        return _PIPELINE
+
+    import sys
+    logger.info(
+        "[generate_image] image_gen_tools running on python=%s (executable=%s); attempting diffusers+torch import",
+        sys.version.split()[0], sys.executable,
+    )
+    try:
+        from diffusers import AutoPipelineForText2Image
+        import torch
+    except ImportError as e:
+        # Log full traceback + interpreter info so we can see WHICH import
+        # failed and from WHICH Python. The user-facing RuntimeError gets
+        # truncated by the UI; the log line below is the ground truth.
+        logger.exception(
+            "[generate_image] ImportError loading diffusers/torch from python=%s (executable=%s): %s",
+            sys.version.split()[0], sys.executable, e,
+        )
+        raise RuntimeError(
+            f"ImportError: {e} | python={sys.executable} | "
+            "Run: pip install diffusers transformers torch accelerate safetensors. "
+            "For NVIDIA GPU on Windows, install torch from "
+            "https://download.pytorch.org/whl/cu121 first."
+        ) from e
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    dtype = torch.float16 if device == "cuda" else torch.float32
+    logger.info("[generate_image] loading %s on %s (dtype=%s)…", target, device, dtype)
+    t0 = time.perf_counter()
+
+    kwargs: Dict[str, Any] = {
+        "torch_dtype": dtype,
+        "safety_checker": None,
+        "requires_safety_checker": False,
+    }
+    if device == "cuda":
+        kwargs["variant"] = "fp16"
+
+    try:
+        pipe = AutoPipelineForText2Image.from_pretrained(target, **kwargs)
+    except Exception:
+        kwargs.pop("variant", None)
+        pipe = AutoPipelineForText2Image.from_pretrained(target, **kwargs)
+
+    pipe = pipe.to(device)
+    try:
+        pipe.set_progress_bar_config(disable=True)
+    except Exception:
+        pass
+
+    elapsed = int((time.perf_counter() - t0) * 1000)
+    logger.info("[generate_image] pipeline ready in %dms", elapsed)
+
+    _PIPELINE = pipe
+    _PIPELINE_ID = target
+    return pipe
 
 
 def _generate_image(args: Dict[str, Any]) -> ToolResult:
@@ -60,65 +126,70 @@ def _generate_image(args: Dict[str, Any]) -> ToolResult:
             retryable=False,
         )
 
-    payload = {
-        "prompt":         prompt,
-        "negative_prompt": args.get("negative_prompt", DEFAULTS["negative_prompt"]),
-        "steps":          int(args.get("steps",     DEFAULTS["steps"])),
-        "width":          int(args.get("width",     DEFAULTS["width"])),
-        "height":         int(args.get("height",    DEFAULTS["height"])),
-        "cfg_scale":      float(args.get("cfg_scale", DEFAULTS["cfg_scale"])),
-        "sampler_name":   args.get("sampler_name", DEFAULTS["sampler_name"]),
-    }
-    if "seed" in args:
-        try:
-            payload["seed"] = int(args["seed"])
-        except (TypeError, ValueError):
-            pass
-
-    base = _a1111_base().rstrip("/")
-    url = f"{base}/sdapi/v1/txt2img"
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+    target = (args.get("model") or _sd_model_id()).strip() or _DEFAULT_SD_MODEL
 
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT_SEC) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        try:
-            err_body = e.read().decode("utf-8", errors="replace")[:300]
-        except Exception:
-            err_body = ""
-        return ToolResult.error(
-            ErrorCode.UNKNOWN,
-            f"HTTP {e.code} from A1111: {err_body}",
-            hint="Check the A1111 console for the actual error and verify a model checkpoint is loaded.",
-            retryable=False,
-        )
-    except urllib.error.URLError as e:
+        pipe = _ensure_pipeline(target)
+    except RuntimeError as e:
         return ToolResult.error(
             ErrorCode.EXTERNAL_TIMEOUT,
-            f"AUTOMATIC1111 not reachable at {base}: {e}.",
-            hint=(
-                "Start A1111 with the --api flag. On Windows: edit webui-user.bat, "
-                "set COMMANDLINE_ARGS=--api, then run it. See README \"Image generation\" section."
-            ),
-            retryable=True,
+            str(e),
+            hint="Install diffusers + torch — see README 'Image generation' section.",
+            retryable=False,
         )
     except Exception as e:  # noqa: BLE001
         return ToolResult.error(
-            ErrorCode.UNKNOWN, f"A1111 request failed: {e}", retryable=False,
+            ErrorCode.UNKNOWN,
+            f"Failed to load pipeline for {target}: {e}",
+            hint="Verify the HuggingFace model id is correct and the weights are downloadable.",
+            retryable=False,
         )
 
-    images_b64: List[str] = body.get("images") or []
-    if not images_b64:
+    is_turbo = "turbo" in target.lower()
+    is_xl = "xl" in target.lower() or "sdxl" in target.lower()
+    steps_default = 4 if is_turbo else 25
+    px_default = 1024 if is_xl else 512
+    cfg_default = 0.0 if is_turbo else 7.0
+
+    width = int(args.get("width", px_default))
+    height = int(args.get("height", px_default))
+    steps = int(args.get("steps", steps_default))
+    guidance = float(args.get("cfg_scale", cfg_default))
+    negative = args.get("negative_prompt", "") or None
+    seed = args.get("seed")
+
+    generator = None
+    if seed is not None:
+        try:
+            import torch
+            gen_device = "cuda" if str(pipe.device).startswith("cuda") else "cpu"
+            generator = torch.Generator(device=gen_device).manual_seed(int(seed))
+        except (TypeError, ValueError, ImportError):
+            generator = None
+
+    try:
+        result = pipe(
+            prompt=prompt,
+            negative_prompt=negative,
+            num_inference_steps=steps,
+            guidance_scale=guidance,
+            width=width,
+            height=height,
+            generator=generator,
+        )
+    except Exception as e:  # noqa: BLE001
+        return ToolResult.error(
+            ErrorCode.UNKNOWN,
+            f"diffusers generation failed: {e}",
+            hint="Likely VRAM exhaustion or an unsupported size — try smaller width/height or switch to a lighter model via config.SD_MODEL_ID.",
+            retryable=False,
+        )
+
+    images = getattr(result, "images", None) or []
+    if not images:
         return ToolResult.error(
             ErrorCode.NO_RESULTS,
-            "A1111 returned no images.",
-            hint="The endpoint replied but with an empty `images` array — check the A1111 console for warnings.",
+            "Pipeline returned no images.",
             retryable=True,
         )
 
@@ -133,38 +204,41 @@ def _generate_image(args: Dict[str, Any]) -> ToolResult:
 
     ts = time.strftime("%Y%m%d-%H%M%S")
     saved: List[str] = []
-    for i, b64 in enumerate(images_b64):
-        if "," in b64:
-            b64 = b64.split(",", 1)[1]
-        try:
-            png = base64.b64decode(b64)
-        except (ValueError, TypeError) as e:
-            logger.warning("generate_image: skipping malformed b64 chunk %d: %s", i, e)
-            continue
-        suffix = f"-{i}" if len(images_b64) > 1 else ""
+    for i, img in enumerate(images):
+        suffix = f"-{i}" if len(images) > 1 else ""
         path = out_dir / f"sd-{ts}{suffix}.png"
         try:
-            path.write_bytes(png)
-        except OSError as e:
+            img.save(path)
+        except Exception as e:  # noqa: BLE001
             return ToolResult.error(
                 ErrorCode.UNKNOWN, f"Could not write {path}: {e}", retryable=False,
             )
         saved.append(str(path))
 
-    if not saved:
-        return ToolResult.error(
-            ErrorCode.UNKNOWN, "A1111 returned data but none of it decoded into images.",
-            retryable=True,
-        )
+    # Emit markdown image syntax so the chat UI renders the picture inline
+    # via `marked`. Forward-slash the path so it works as a URL on both
+    # Windows and POSIX. The /data/generated/ static route in proxy.py
+    # serves these paths to the browser. We also keep the raw paths in
+    # meta["output_paths"] so callers that need the literal filesystem
+    # path (e.g. files_touched, session memory) still get it.
+    def _to_url(p: str) -> str:
+        u = p.replace("\\", "/")
+        if u.startswith("./"):
+            u = u[2:]
+        return u
+
+    alt = (prompt[:60] + ("…" if len(prompt) > 60 else "")).replace("]", "").replace("[", "")
+    md_imgs = "\n\n".join(f"![Generated image: {alt}]({_to_url(p)})" for p in saved)
 
     return ToolResult.success(
-        f"Generated {len(saved)} image(s):\n" + "\n".join(saved),
+        f"Generated {len(saved)} image(s) via {target}.\n\n{md_imgs}",
         files_touched=saved,
         output_paths=saved,
-        prompt=prompt,
-        width=payload["width"],
-        height=payload["height"],
-        steps=payload["steps"],
+        backend="diffusers",
+        model=target,
+        width=width,
+        height=height,
+        steps=steps,
     )
 
 
@@ -172,22 +246,25 @@ def register(registry: ToolRegistry) -> None:
     registry.register(Tool(
         name="generate_image",
         description=(
-            "Generate an image from a text prompt using a local AUTOMATIC1111 "
-            "Stable Diffusion WebUI (default http://127.0.0.1:7860, must be "
-            "running with --api). Saves PNG(s) under ./data/generated/ and "
-            "returns the path(s). Reports a clear error if A1111 is not running."
+            "Generate an image from a text prompt using an in-process "
+            "Hugging Face `diffusers` Stable Diffusion / SDXL pipeline. "
+            f"Default model: {_DEFAULT_SD_MODEL}. Saves PNG(s) under "
+            "./data/generated/ and returns the path(s). On first call, "
+            "downloads ~6 GB of weights and loads them onto the GPU "
+            "(~30-90 s); subsequent calls are fast. Reports a clear "
+            "install-hint error if diffusers/torch aren't installed."
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "prompt":          {"type": "string",  "description": "Positive prompt — what to render."},
                 "negative_prompt": {"type": "string",  "description": "What to avoid (e.g. 'blurry, low quality')."},
-                "width":           {"type": "integer", "description": "Pixels, default 512. Common: 512, 768, 1024."},
-                "height":          {"type": "integer", "description": "Pixels, default 512."},
-                "steps":           {"type": "integer", "description": "Sampling steps, default 20. Higher = slower, finer."},
-                "cfg_scale":       {"type": "number",  "description": "Guidance scale, default 7. Range 1-20."},
-                "sampler_name":    {"type": "string",  "description": "Sampler name, default 'Euler a'."},
-                "seed":            {"type": "integer", "description": "Seed for reproducibility. -1 (default) is random."},
+                "width":           {"type": "integer", "description": "Pixels. Default: 1024 for SDXL, 512 otherwise."},
+                "height":          {"type": "integer", "description": "Pixels. Default: same as width."},
+                "steps":           {"type": "integer", "description": "Sampling steps. Default: 4 for *-turbo, 25 otherwise."},
+                "cfg_scale":       {"type": "number",  "description": "Guidance scale. Default: 0 for *-turbo, 7 otherwise."},
+                "seed":            {"type": "integer", "description": "Seed for reproducibility. Omit for random."},
+                "model":           {"type": "string",  "description": "Override HuggingFace model id (e.g. 'stabilityai/stable-diffusion-2-1')."},
                 "output_dir":      {"type": "string",  "description": "Override save dir; default ./data/generated."},
             },
             "required": ["prompt"],

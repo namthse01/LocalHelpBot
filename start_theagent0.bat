@@ -21,7 +21,13 @@ if not exist "venv\Scripts\python.exe" (
 )
 
 echo [launch] Running dev mode via venv
-start /b venv\Scripts\python core\proxy.py
+:: NOTE: invoke as a module (-m core.proxy), NOT as a script
+:: (core\proxy.py). The script form puts core\ at the front of
+:: sys.path, which makes core\secrets.py shadow the stdlib `secrets`
+:: module — and that breaks huggingface_hub / diffusers (they
+:: `from secrets import token_hex`). Module form puts the project
+:: root on sys.path instead, so stdlib `secrets` resolves correctly.
+start /b venv\Scripts\python -m core.proxy
 timeout /t 3 >nul
 start http://localhost:11435
 echo.

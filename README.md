@@ -72,10 +72,11 @@ Hệ thống AI Multi-Agent chạy local, kết hợp RAG + Agentic Loop tự s�
 git clone <repo-url> && cd TheAgent0
 
 # Pull models
-ollama pull huihui_ai/qwen2.5-abliterate:7b && ollama pull mxbai-embed-large && ollama pull glm-4.7-flash
+ollama pull huihui_ai/qwen2.5-abliterate:14b && ollama pull mxbai-embed-large && ollama pull glm-4.7-flash
 # (The default CHAT_MODEL is an abliterated Qwen 2.5 — refusals removed at the
-# weights level, intended for single-user local use. Swap models any time —
-# see "Switching chat model" below.)
+# weights level, intended for single-user local use. 14b is the default for
+# 16GB+ RAM machines; drop to :7b in config.py for low-RAM setups. Swap any
+# time — see "Switching chat model" below.)
 
 # Python venv (Windows)
 python -m venv venv && venv\Scripts\activate
@@ -108,38 +109,60 @@ banner at the top of the **Change Mode** tab.
 
 ### Image generation (optional)
 
-The `generate_image` tool calls a local **AUTOMATIC1111 Stable Diffusion
-WebUI** at `http://127.0.0.1:7860`. It's dormant until A1111 is running.
+The `generate_image` tool runs a Hugging Face `diffusers` Stable
+Diffusion pipeline **in-process** — no separate WebUI to install. The
+tool is dormant until you install the (optional, multi-GB) deps.
 
-One-time setup:
+One-time install:
 
-```bash
-git clone https://github.com/AUTOMATIC1111/stable-diffusion-webui
-cd stable-diffusion-webui
-# Drop a .safetensors / .ckpt checkpoint into models/Stable-diffusion/
+```powershell
+# CPU-only:
+pip install diffusers transformers torch accelerate safetensors
+
+# NVIDIA GPU (recommended — 10-30× faster). Pick the CUDA version
+# that matches your driver; cu121 covers most current NVIDIA setups:
+pip install torch --index-url https://download.pytorch.org/whl/cu121
+pip install diffusers transformers accelerate safetensors
 ```
 
-Enable the API — edit `webui-user.bat` (Windows) and set:
+Default model is **`stabilityai/sdxl-turbo`** (~6 GB, 1–4 steps,
+~10–30 s per image on a 6–12 GB GPU). The first call downloads the
+weights to `~/.cache/huggingface/` (~30–90 s of one-time lag);
+subsequent calls reuse the cached pipeline in VRAM.
 
-```
-set COMMANDLINE_ARGS=--api
-```
+Then ask the bot:
 
-Then launch with `webui-user.bat`. When you see
-`Running on local URL: http://127.0.0.1:7860`, ask the bot:
+> generate an image of a forest at dawn, 1024x1024
 
-> generate an image of a forest at dawn, 768x512
+PNGs land under `data/generated/sd-<timestamp>.png`. To swap models,
+edit `SD_MODEL_ID` in [config.py](config.py) — examples are in the
+inline comments (SD 2.1, SDXL Base, etc.). The plugin auto-tunes
+step count, guidance, and size defaults per model.
 
-PNGs land under `data/generated/sd-<timestamp>.png`. Override the
-endpoint via `A1111_BASE` in `config.py` if you run A1111 elsewhere.
+Safety note: `safety_checker=None` is set in the plugin because this is
+a single-user local install. The built-in NSFW filter would otherwise
+blur output for adult creative work you've opted into.
 
 ### Switching chat model
 
-The default is `huihui_ai/qwen2.5-abliterate:7b`. To swap, edit
+The default is `huihui_ai/qwen2.5-abliterate:14b`. To swap, edit
 `CHAT_MODEL` in [config.py](config.py) (one place — all 5 agent profiles
 reference the constant), OR override at runtime without touching source
 by adding a key to `runtime_overrides.json`. The runtime override is
 parsed at config.py:337-342 and beats the source default.
+
+Common sizes: `:7b` (~5 GB, fits on most laptops), `:14b` (~9 GB,
+default — best writing on 16GB+ RAM), `:32b` (~20 GB, needs strong GPU).
+
+### Creative-mode sampling
+
+`run_agent` auto-detects creative-writing requests (English: "write a
+story", "describe a scene", "roleplay", etc.; Vietnamese: "viết truyện",
+"kể chuyện", "miêu tả", etc.) and bumps the Ollama sampling preset to
+`SAMPLING_CREATIVE` (temperature 0.85, num_predict 4096, top_p 0.95,
+repeat_penalty 1.1) for that turn. Tool-use turns stay on the
+deterministic `SAMPLING_DEFAULT` (temp 0.3) so `<tool_use>` JSON
+doesn't drift. See [core/providers.py](core/providers.py).
 
 ### Agent catalog
 

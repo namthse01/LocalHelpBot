@@ -35,12 +35,13 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from core.providers import smart_provider
+from core.providers import SAMPLING_CREATIVE, smart_provider
 from core.tool_schema import ErrorCode, Tool, ToolRegistry, ToolResult
 
 logger = logging.getLogger(__name__)
 
-MAX_TURNS = 20
+MAX_TURNS = 8  # Lowered from 20: chat-style requests should converge in 1-4 turns.
+               # Research-heavy profiles can override via run_agent(max_turns=N).
 MAX_ERROR_STREAK = 5
 MAX_PARSE_RETRIES = 3
 MAX_WRITE_NUDGES = 3
@@ -49,6 +50,53 @@ MAX_WRITE_NUDGES = 3
 # and emits a synthetic LOOP_BUDGET result instead. Set to 2 so the
 # third attempt is the one that gets blocked.
 STOP_THE_LINE_MAX_RETRIES = 2
+
+# Tool-family budget. Stop-the-Line catches identical (tool, args) calls,
+# but a model that runs `fetch_url(A)` → `fetch_url(B)` → `fetch_url(C)` →
+# … evades it by varying args. The family budget caps consecutive calls
+# of the SAME CATEGORY regardless of args, so the model can't endlessly
+# explore one direction (e.g. web search) without committing.
+TOOL_FAMILIES: Dict[str, str] = {
+    # Web / network
+    "search_web": "web", "fetch_url": "web", "download_file": "web",
+    "extract_text": "web", "github_search_repos": "web",
+    "github_read_file": "web", "github_releases": "web",
+    "wikipedia_summary": "web", "youtube_transcript": "web",
+    "pypi_search": "web", "pypi_info": "web",
+    # Filesystem reads
+    "read_file": "fs_read", "read_file_chunk": "fs_read",
+    "read_pdf": "fs_read", "read_docx": "fs_read",
+    "list_dir": "fs_read", "glob_files": "fs_read",
+    "grep_file": "fs_read", "find_in_files": "fs_read",
+    # Filesystem writes
+    "write_file": "fs_write", "write_pdf": "fs_write",
+    "write_docx": "fs_write", "edit_file": "fs_write",
+    "delete_file": "fs_write", "make_dir": "fs_write",
+    "move_file": "fs_write",
+    # Image
+    "generate_image": "image", "describe_image": "image",
+    "screenshot_and_describe": "image",
+    # System / exec
+    "run_command": "exec", "python_exec": "exec",
+    "install_package": "exec", "list_processes": "exec",
+    "kill_process": "exec", "system_info": "exec",
+    "screenshot": "exec", "open_with_default_app": "exec",
+    "list_windows": "exec", "watch_file": "exec",
+    "read_env": "exec", "update_self": "exec",
+    # RAG / learning
+    "query_rag": "rag", "learn_from_file": "rag",
+    "learn_from_url": "rag", "save_lesson": "rag",
+    # Clipboard
+    "clipboard_read": "clipboard", "clipboard_write": "clipboard",
+    # Meta
+    "task": "delegate",
+}
+TOOL_FAMILY_BUDGET = 4  # Max calls of any one family per task.
+
+# CONVERGE injection — after this many turns without a final answer,
+# inject a user-role nudge that forbids more tool calls and forces the
+# model to produce an answer (or a clarifying question) on the next turn.
+CONVERGE_INJECT_AFTER_TURN = 4
 
 # Micro-compaction — replace old verbose tool-result bodies with a
 # placeholder + digest once the conversation gets long. Keeps the most
@@ -544,6 +592,44 @@ def _fmt_num(x: float) -> str:
 
 
 # ───────────────────────────────────────────────────────────────────────
+# Creative-mode detection
+# ───────────────────────────────────────────────────────────────────────
+#
+# When the user's latest message looks like a request for creative prose
+# (story, scene, RP, etc.), we bump the Ollama sampling to SAMPLING_CREATIVE
+# (warmer + longer + with repeat-penalty). Everything else stays on
+# SAMPLING_DEFAULT, which is still deterministic enough for tool-use JSON.
+
+_CREATIVE_PATTERNS = [
+    # English creative requests
+    r"\b(write|compose|tell|narrate|continue|expand|describe)\b.{0,30}\b"
+    r"(story|tale|scene|narrative|chapter|poem|article|essay|fanfic|"
+    r"fiction|character|dialogue|monologue|smut|erotica|lemon)\b",
+    r"\b(roleplay|role[- ]play|RP)\b",
+    r"\b(NSFW|adult|explicit)\b|18\+",
+    # Vietnamese creative requests
+    r"\b(viết|kể|sáng tác|miêu tả|tả|tiếp|nối)\b.{0,30}\b"
+    r"(truyện|câu chuyện|chuyện|tiểu thuyết|cảnh|nhân vật|đoạn|"
+    r"kịch bản|thơ|bài viết|văn)\b",
+    r"\b(người lớn|nóng bỏng|nsfw)\b",
+]
+_CREATIVE_RE = re.compile("|".join(_CREATIVE_PATTERNS), re.IGNORECASE)
+
+
+def _looks_creative(user_msg: str) -> bool:
+    """Heuristic: does this user message ask for creative prose?
+
+    Used by run_agent to switch the LLM sampling preset for the next turn.
+    Intentionally lenient — false positives just produce slightly more
+    diverse prose; false negatives produce the dry tool-use-friendly
+    output the user complained about.
+    """
+    if not user_msg:
+        return False
+    return bool(_CREATIVE_RE.search(user_msg))
+
+
+# ───────────────────────────────────────────────────────────────────────
 # Main loop
 # ───────────────────────────────────────────────────────────────────────
 
@@ -573,15 +659,49 @@ def run_agent(
     # Reset to 0 on any success of that same call.
     retry_counts: Dict[str, int] = {}
 
+    # Per-family call counter — caps consecutive exploration in one tool
+    # category (e.g., 4 web fetches max). Unlike Stop-the-Line this is
+    # not reset on success; once a family hits its budget, the loop
+    # refuses further calls for the rest of the task so the model is
+    # forced to switch strategy or commit to an answer.
+    family_counts: Dict[str, int] = {}
+
+    # CONVERGE injection one-shot flag — flipped True after the loop
+    # injects the "answer now" nudge so it doesn't fire every turn.
+    converge_injected = False
+
     _write_tools = {"write_file", "write_pdf", "write_docx", "edit_file"}
     _first_user = next((m.get("content", "") for m in messages if m.get("role") == "user"), "")
+    # Heuristic: does the FIRST user message explicitly ask for a file?
+    # Conservative — we only nudge the model to write a file when the user
+    # named an EXTENSION (`.pdf`/`.md`/...), or used a save verb tied to a
+    # file/target (`save to X`, `into report.pdf`, `ghi vào notes.txt`).
+    # The bare verb "write" is NOT enough — "write me a poem" is chat-only,
+    # not a file request. False positives here cause the agent to bundle
+    # surprise files the user didn't ask for.
     _expects_write = bool(
         re.search(
+            # Path 1: any of these write/save verbs, followed within 60 chars
+            # by a real file extension OR an explicit "into <file>" phrase.
             r"\b(write|save|create|export|output|summariz\w+|report|generate|ghi|lưu|tạo|xuất)\b"
-            r".{0,60}(\.(?:pdf|docx|doc|md|txt|csv|json|html|xml|ya?ml)\b|\binto\b|\bto\s+\w+|\bvào\b)",
+            r".{0,60}(\.(?:pdf|docx|doc|md|txt|csv|json|html|xml|ya?ml)\b"
+            r"|\binto\s+(?:a\s+)?(?:file\b|\.?(?:pdf|docx|md|txt|csv|json|html|xml|ya?ml)\b))",
             _first_user, re.IGNORECASE | re.DOTALL,
         )
-        or bool(re.search(r"\binto\s+a?\s*\.?(?:pdf|docx|md|txt|csv|json)\b", _first_user, re.IGNORECASE))
+        # Path 2: explicit "save/lưu/ghi <to|as|vào> <something>" pattern.
+        # NOTE: do NOT add a "bare extension anywhere in the message" path —
+        # the user may be referring to a file they want to READ ("read
+        # guide.pdf for me"), not write. Stick to verb-anchored patterns.
+        or bool(re.search(
+            r"\b(save|export|output|lưu|ghi|xuất)\s+(to|as|into|vào|vô)\b",
+            _first_user, re.IGNORECASE,
+        ))
+        # Path 3: "into <filename.ext>" anywhere — strong signal of file
+        # destination even with verbs we don't list (draft, compose, ...).
+        or bool(re.search(
+            r"\binto\s+\w+\.(?:pdf|docx|doc|md|txt|csv|json|html|xml|ya?ml)\b",
+            _first_user, re.IGNORECASE,
+        ))
     )
     _write_done = False
     _write_nudge_count = 0
@@ -629,9 +749,39 @@ def run_agent(
                 logger.info(f"[agent] micro-compacted {n} old tool-result turns")
                 _emit(stream_cb, {"type": "status", "text": f"micro-compacted {n} old tool outputs"})
 
-        _emit(stream_cb, {"type": "status", "text": f"Turn {turn + 1}: thinking…"})
+        # ── CONVERGE injection ──────────────────────────────────────────
+        # After CONVERGE_INJECT_AFTER_TURN turns of unresolved tool-use, add a
+        # user-role nudge forbidding more tool calls and forcing the model
+        # to produce an answer (or a clarifying question) on the next turn.
+        # Fires exactly once per task.
+        if (
+            turn >= CONVERGE_INJECT_AFTER_TURN
+            and not converge_injected
+        ):
+            nudge = (
+                "CONVERGE: You have used multiple tool calls. STOP calling tools. "
+                "On your next message, emit your FINAL ANSWER using the information "
+                "you already have — even if incomplete. If you genuinely cannot "
+                "answer, ask ONE short clarifying question instead. Do NOT emit "
+                "any <tool_use> tag in your next reply."
+            )
+            conversation.append({"role": "user", "content": nudge})
+            converge_injected = True
+            logger.info("[agent] CONVERGE nudge injected after turn %d", turn)
+            _emit(stream_cb, {
+                "type": "status",
+                "text": f"converge nudge — forcing answer after turn {turn}",
+            })
+
+        last_user_for_options = _last_user_message(conversation)
+        options = SAMPLING_CREATIVE if _looks_creative(last_user_for_options) else None
+        _emit(stream_cb, {
+            "type": "status",
+            "text": f"Turn {turn + 1}: thinking…" + (" [creative]" if options else ""),
+            "creative_mode": options is not None,
+        })
         t_turn = _time.perf_counter()
-        response = smart_provider.chat(conversation)
+        response = smart_provider.chat(conversation, options=options)
         turn_ms = int((_time.perf_counter() - t_turn) * 1000)
         logger.info(f"[agent] turn {turn+1} — {response.provider}/{response.model} {response.timing_str()}")
         content = response.content or ""
@@ -732,6 +882,40 @@ def run_agent(
                         retryable=False,
                     )
                 else:
+                    # ── Family-budget gate ─────────────────────────────
+                    # Caps consecutive exploration within one tool category
+                    # (e.g. 4 web fetches max). Independent of args, so a
+                    # model that varies URLs each turn still hits the wall.
+                    family = TOOL_FAMILIES.get(name)
+                    if family and family_counts.get(family, 0) >= TOOL_FAMILY_BUDGET:
+                        prior = family_counts[family]
+                        result = ToolResult.error(
+                            ErrorCode.LOOP_BUDGET,
+                            (
+                                f"Family budget exhausted: '{family}' tools have been "
+                                f"called {prior} times in this task. Refusing further "
+                                f"'{family}' calls — switch to a different strategy or "
+                                f"commit to a final answer with what you already have."
+                            ),
+                            hint="Stop exploring in this direction; either pick a different family of tool or write your final answer now.",
+                            retryable=False,
+                        )
+                        logger.warning(
+                            "[agent] FAMILY-BUDGET hit: family=%s tool=%s count=%d",
+                            family, name, prior,
+                        )
+                        # Track for telemetry but DO NOT actually call the handler.
+                        family_counts[family] = prior + 1
+                        results.append({"name": name, "args": args, "result": result})
+                        _emit(stream_cb, {
+                            "type": "tool_result",
+                            "id": tool_uid,
+                            "tool": name,
+                            "ok": False,
+                            "code": ErrorCode.LOOP_BUDGET.value,
+                            "preview": result.preview(400),
+                        })
+                        continue
                     # ── Stop-the-Line gate ─────────────────────────────
                     call_hash = _args_hash(name, args)
                     if retry_counts.get(call_hash, 0) >= STOP_THE_LINE_MAX_RETRIES:
@@ -760,6 +944,11 @@ def run_agent(
                         retry_counts[call_hash] = 0
                     else:
                         retry_counts[call_hash] = retry_counts.get(call_hash, 0) + 1
+
+                    # Count this tool's family for the family-budget gate.
+                    family = TOOL_FAMILIES.get(name)
+                    if family:
+                        family_counts[family] = family_counts.get(family, 0) + 1
 
             if result.ok:
                 all_errors = False

@@ -4,10 +4,13 @@ RAG-aware + Agentic Ollama proxy  — port 11435
 
 import copy
 import json
+import mimetypes
 import multiprocessing
+import os
 import subprocess
 import sys
 import threading
+import urllib.parse
 import urllib.request
 import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -311,6 +314,54 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(f"File not found: {e}".encode())
                 return
+
+        # ── /data/generated/ static route ─────────────────────────────
+        # Serves images produced by the `generate_image` tool so the chat
+        # UI can render them inline via markdown <img>. Scoped strictly to
+        # data/generated/ — NEVER serves data/sessions/ (user prompts) or
+        # other sensitive subtrees. Path traversal is rejected.
+        if self.path.startswith("/data/generated/"):
+            rel = self.path[len("/data/"):]  # e.g. "generated/sd-X.png"
+            # Strip query string before resolving on disk.
+            if "?" in rel:
+                rel = rel.split("?", 1)[0]
+            try:
+                decoded = urllib.parse.unquote(rel)
+            except Exception:
+                self.send_response(400); self.end_headers(); return
+            # Reject absolute paths, drive letters, traversal segments.
+            if (
+                decoded.startswith("/")
+                or decoded.startswith("\\")
+                or ":" in decoded
+                or ".." in decoded.replace("\\", "/").split("/")
+            ):
+                self.send_response(403); self.end_headers(); return
+            project_root = Path(__file__).resolve().parent.parent
+            data_root = (project_root / "data").resolve()
+            allowed_root = (data_root / "generated").resolve()
+            abs_path = (data_root / decoded).resolve()
+            # Defense in depth: even after normalization, confirm the
+            # resolved path is inside data/generated/.
+            try:
+                abs_path.relative_to(allowed_root)
+            except ValueError:
+                self.send_response(403); self.end_headers(); return
+            if not abs_path.exists() or not abs_path.is_file():
+                self.send_response(404); self.end_headers(); return
+            ct, _ = mimetypes.guess_type(str(abs_path))
+            data = abs_path.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", ct or "application/octet-stream")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "public, max-age=3600")
+            self.end_headers()
+            self.wfile.write(data)
+            return
+
+        # Any other /data/* subtree is explicitly NOT served.
+        if self.path.startswith("/data/"):
+            self.send_response(404); self.end_headers(); return
 
         if self.path == "/api/config":
             from config import DISCORD_SETTINGS, AGENT_PROFILES, AUTOMATION_TASKS, MODEL_PROVIDERS

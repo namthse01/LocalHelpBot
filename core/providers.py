@@ -8,6 +8,20 @@ from config import MODEL_PROVIDERS, OLLAMA_BASE
 
 logger = logging.getLogger(__name__)
 
+# Sampling presets for the local provider.
+#   DEFAULT  — balanced for mixed tool-use + general chat. Still
+#              deterministic enough that <tool_use> JSON stays valid.
+#   CREATIVE — warmer + longer + with repeat penalty; activated by the
+#              agent loop when the user's latest message looks like a
+#              creative-writing / story / RP request.
+SAMPLING_DEFAULT = {"temperature": 0.3, "num_predict": 2048, "top_p": 0.9}
+SAMPLING_CREATIVE = {
+    "temperature": 0.85,
+    "num_predict": 4096,
+    "top_p": 0.95,
+    "repeat_penalty": 1.1,
+}
+
 class ModelResponse:
     def __init__(self, content: str, provider: str, model: str, tokens_used: int = 0,
                  latency_ms: int = 0, prompt_tokens: int = 0, completion_tokens: int = 0,
@@ -42,7 +56,7 @@ class LocalProvider(BaseProvider):
             "model": self.model,
             "messages": messages,
             "stream": False,
-            "options": options or {"temperature": 0.2, "num_predict": 1024},
+            "options": options or SAMPLING_DEFAULT,
         }).encode()
 
         req = urllib.request.Request(

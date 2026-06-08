@@ -68,15 +68,56 @@ Hệ thống AI Multi-Agent chạy local, kết hợp RAG + Agentic Loop tự s�
 
 ## Quick start
 
+### One-command install (khuyến nghị)
+
+Bộ cài đặt đa nền tảng tự **dò RAM/CPU/GPU của máy bạn**, chọn đúng cỡ
+model phù hợp, rồi tự lo hết: tạo venv → cài deps → cài/khởi động Ollama
+→ tải đúng model → bật git hooks → build RAG. Không cần sửa file nào.
+
 ```bash
 git clone <repo-url> && cd TheAgent0
+```
 
-# Pull models
-ollama pull huihui_ai/qwen2.5-abliterate:14b && ollama pull mxbai-embed-large && ollama pull glm-4.7-flash
-# (The default CHAT_MODEL is an abliterated Qwen 2.5 — refusals removed at the
-# weights level, intended for single-user local use. 14b is the default for
-# 16GB+ RAM machines; drop to :7b in config.py for low-RAM setups. Swap any
-# time — see "Switching chat model" below.)
+**Windows** — nháy đúp `install.bat`, hoặc trong terminal:
+
+```bat
+install.bat
+```
+
+**Linux / macOS:**
+
+```bash
+chmod +x install.sh && ./install.sh
+```
+
+Tự động (không hỏi gì): `install.bat --yes` / `./install.sh --yes`.
+Các cờ khác: `--skip-models`, `--skip-rag`, `--skip-ollama`.
+
+Cài xong, khởi chạy:
+
+```bash
+.\start_theagent0.bat      # Windows
+./start_theagent0.sh       # Linux / macOS
+# UI tự mở http://localhost:11435
+```
+
+> Xem trước máy bạn sẽ được gán model nào (không cài gì cả):
+> `python -m core.hardware`
+
+Bảng chọn model theo phần cứng (lấy VRAM nếu có GPU NVIDIA, ngược lại lấy RAM):
+
+| Ngân sách | Chat | Embed | Vision | Large |
+|---|---|---|---|---|
+| < 6 GB  | `llama3.2:3b` | `nomic-embed-text` | `moondream` | — |
+| 6–12 GB | `qwen2.5-abliterate:7b` | `mxbai-embed-large` | `llava:7b` | — |
+| 12–24 GB | `qwen2.5-abliterate:14b` | `mxbai-embed-large` | `llava` | — |
+| ≥ 24 GB | `qwen2.5-abliterate:32b` | `mxbai-embed-large` | `llava` | `glm-4.7-flash` |
+
+### Cài thủ công (fallback)
+
+```bash
+# Pull models (chọn cỡ theo máy — xem bảng trên)
+ollama pull huihui_ai/qwen2.5-abliterate:14b && ollama pull mxbai-embed-large
 
 # Python venv (Windows)
 python -m venv venv && venv\Scripts\activate
@@ -84,15 +125,11 @@ pip install -r requirements.txt
 # Linux/Mac: pip works the same; pywin32 is skipped on non-Windows.
 
 # Activate git hooks (chặn commit nhầm API key / log / runtime_overrides.json).
-# Chạy 1 lần sau khi clone:
 git config core.hooksPath .githooks
-
-# Sửa config.py (CHAT_MODEL, EMBED_MODEL). API key nhập trong Web UI → Change Mode.
 
 # Build RAG & chạy
 python data/indexer.py
 .\start_theagent0.bat
-# UI tự mở http://localhost:11435
 ```
 
 ### Healthcheck (v3)

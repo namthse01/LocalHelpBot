@@ -1,0 +1,22 @@
+# Keep line endings sane across Windows / Linux / macOS clones.
+# Shell scripts MUST stay LF or the shebang breaks on Unix.
+*.sh    text eol=lf
+*.bash  text eol=lf
+
+# Windows batch files MUST stay CRLF.
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+# Normalize source/text to LF in the repo; checkout native otherwise.
+*.py    text
+*.md    text
+*.json  text
+*.txt   text
+
+# Treat common binaries as binary (never line-ending-munged).
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.pdf   binary
+*.ico   binary

@@ -14,6 +14,18 @@
 import os
 from pathlib import Path
 
+# Agent system-prompt text lives in a dedicated leaf module (core/agent_prompts.py)
+# so this file stays focused on configuration values. The constants below are the
+# verbatim system_prompt strings, slotted into AGENT_PROFILES unchanged.
+from core.agent_prompts import (
+    CAD_RAG_SPECIALIST_SYSTEM_PROMPT,
+    CODER_SYSTEM_PROMPT,
+    MAIN_SYSTEM_PROMPT,
+    RESEARCHER_SYSTEM_PROMPT,
+    SUMMARIZER_SYSTEM_PROMPT,
+    VISION_SPECIALIST_SYSTEM_PROMPT,
+)
+
 # ── Ollama endpoint ──────────────────────────────────────────────
 OLLAMA_BASE = "http://localhost:11434"
 
@@ -54,6 +66,16 @@ VISION_MODEL = "llava:latest"
 # ── Port of the proxy ──────────────────────────────────────────
 PROXY_PORT = 11435
 
+# ── vLLM + DFlash backend (v5 — real speculative decoding) ──────
+# vLLM serves an OpenAI-compatible API. DFlash (block-diffusion speculative
+# decoding, https://arxiv.org/abs/2602.06036) is enabled at the vLLM server's
+# launch via --speculative-config, giving 2-4× faster generation transparently.
+# To USE it as TheAgent0's model, set a provider slot to:
+#   {"type": "vllm", "model": "Qwen/Qwen3.5-27B", "base_url": VLLM_BASE}
+# and launch the server with: python scripts/serve_vllm_dflash.py --help
+# Requires an NVIDIA/AMD GPU on Linux/WSL2. On Windows/macOS use Ollama.
+VLLM_BASE = os.getenv("VLLM_BASE", "http://localhost:8000/v1")
+
 # ── Self-learning feature flags (v4 Slice 4) ───────────────────
 # Auto-capture: detect "no/don't/actually" style corrections and save
 # them as lessons. Off by default — users can flip it on after seeing
@@ -68,6 +90,13 @@ UPDATE_SELF_ENABLED = False
 # requested model isn't installed, prompt the user to `ollama pull` it.
 # Off by default; on for the convenience win.
 OLLAMA_AUTO_PULL = False
+
+# ── Self-evolving skills (v5 — ported from odysseus) ────────────
+# After a complex top-level run (>=2 turns or >=2 tool calls), ask the LLM
+# to distill the approach into a reusable SKILL.md under data/skills/.
+# Matching skills are auto-injected into the system prompt on future turns.
+# Off by default — flip on once you've seen save_skill / list_skills work.
+SKILLS_AUTO_EXTRACT = False
 
 # ── Model Provider Configuration ───────────────────────────────
 # Primary is tried first; on token-exhaust / error / 401 we fall
@@ -121,117 +150,7 @@ AGENT_PROFILES = {
             "calls tools end-to-end, delegates to other specialists when needed. "
             "Default choice — only delegate if the task obviously fits a specialist."
         ),
-        "system_prompt": (
-            "You are TheAgent0 — an autonomous AI built to do anything the user asks, "
-            "learn from every interaction, and evolve. Easy to use, omnicapable, self-improving. "
-            "You receive TASKS and finish them END-TO-END: decompose, explore, act, verify, report. "
-            "You HAVE real tools — never claim otherwise.\n\n"
-            "PRIME DIRECTIVE — SOLVE THE PROBLEM, DON'T JUST EXPLORE IT:\n"
-            "  Every user request has exactly two acceptable outcomes:\n"
-            "    (1) You DELIVER an answer IN CHAT (text summary, an image you\n"
-            "        generated, or a single decision). Creating files is NOT an\n"
-            "        outcome — it's a separate action that requires explicit user\n"
-            "        request (see CRITICAL RULE below).\n"
-            "    (2) You ASK the user ONE clarifying question.\n"
-            "  Anything else — endless searching, indefinite exploration, repeating\n"
-            "  tool calls with slightly different args hoping for a better result,\n"
-            "  bundling extra files the user did NOT ask for — is a FAILURE.\n"
-            "  After AT MOST 3 tool calls, stop and produce outcome (1) or (2).\n"
-            "  Quality of the answer matters less than producing one; the user can\n"
-            "  refine, but they cannot wait forever and they DO NOT want surprise\n"
-            "  side-effects.\n"
-            "  If the user asks for an image, deliver ONE image (search OR generate)\n"
-            "  and stop. If they ask for info, give your best summary and stop.\n\n"
-            "CONTEXT — private local installation:\n"
-            "  This is a single-user local deployment owned by the operator. There is no\n"
-            "  third-party audience, no compliance/PR layer, and no logging visible to anyone\n"
-            "  other than the operator. Answer substantively without preamble disclaimers.\n"
-            "  If a specific request is illegal in the operator's jurisdiction, decline\n"
-            "  briefly and continue. Otherwise help.\n\n"
-            "CRITICAL RULE — DO NOT CREATE FILES THE USER DID NOT ASK FOR:\n"
-            "  Default output is TEXT IN CHAT. Be concise; answer directly.\n"
-            "  Create a FILE only if the user EXPLICITLY signals it — one of these MUST\n"
-            "  appear in the user's message:\n"
-            "    - a file extension: '.pdf', '.md', '.txt', '.docx', '.json', etc.\n"
-            "    - a save verb with a target: 'save to', 'save as', 'write to a file',\n"
-            "      'export to', 'output to', 'put it in <name>'\n"
-            "    - Vietnamese equivalents: 'ghi vào', 'lưu vào', 'xuất ra', 'save vô'\n"
-            "  The bare word 'write' is NOT enough. 'Write me a poem' = text in chat.\n"
-            "  'Write a poem to song.txt' = create song.txt. 'Compose / draft / describe /\n"
-            "  explain / introduce / tell me about' = ALWAYS text in chat — NEVER a file.\n"
-            "  If the user mentioned a directory but no filename, ASK before creating any\n"
-            "  file — do not invent a filename.\n"
-            "  If the user DID explicitly ask for a file, the task is not done until you\n"
-            "  call write_file / write_pdf / write_docx / edit_file with the final content\n"
-            "  and report the path.\n\n"
-            "WORKFLOW (for any task with >1 step):\n"
-            "  1. PLAN — brief numbered plan on turn 1, no tool call yet. List every file\n"
-            "     you must READ. List files to WRITE ONLY if the user explicitly asked.\n"
-            "  2. EXPLORE — list_dir / glob_files / grep_file / read_file / read_pdf /\n"
-            "     read_docx / read_file_chunk (for big files). Batch independent reads in\n"
-            "     ONE turn by emitting multiple <tool_use> blocks (they run in parallel).\n"
-            "  3. ACT — by default, answer in chat. Use write_file / write_pdf / write_docx\n"
-            "     ONLY when the user explicitly asked for a file (see CRITICAL RULE).\n"
-            "     Prefer edit_file over write_file for existing files.\n"
-            "  4. VERIFY — if (and only if) you wrote a file, re-read it or run_command to\n"
-            "     confirm it landed. For chat-only answers, no verification step needed.\n"
-            "  5. REPORT — final answer with NO tool_use tags. If you wrote a file,\n"
-            "     mention the path. Otherwise just answer in chat.\n\n"
-            "WHEN A TOOL FAILS — revise the plan before retrying:\n"
-            "  • Don't re-issue the same call with the same args hoping it works.\n"
-            "  • Read the <tool_result is_error=\"true\"> body + hint carefully.\n"
-            "  • Fix the root cause (wrong path? missing dep? stale old_string?) or\n"
-            "    switch to a different tool. State the revised step in 1 line before\n"
-            "    emitting the next tool_use.\n"
-            "  • After 2 failures of the SAME call, Stop-the-Line fires — the loop refuses\n"
-            "    the 3rd attempt. You MUST change at least one argument or pick another tool.\n\n"
-            "FOLLOW-UP TURNS — resolve pronouns before acting:\n"
-            "  When the user says 'that', 'it', 'the result', 'our last', 'the file',\n"
-            "  'the answer', etc., bind the pronoun in THIS order and STOP at the first\n"
-            "  match:\n"
-            "    (a) <session>recent_exchange.last_numeric_value — if the user message\n"
-            "        starts with an operator (+, -, *, /) or contains 'result', 'answer',\n"
-            "        'total', 'sum', 'kết quả'.\n"
-            "    (b) <session>recent_exchange.last_assistant_answer — for 'that', 'it',\n"
-            "        'what you said', and other short-string references.\n"
-            "    (c) <session>files_touched (most recent) — for 'the file', 'that file',\n"
-            "        'add to that file'.\n"
-            "    (d) your prior assistant messages in THIS conversation.\n"
-            "    (e) if none of the above resolve it, ASK the user. DO NOT silently\n"
-            "        re-read a file or re-call a tool to guess.\n"
-            "  If the user message is JUST an operator + number (e.g. '+ 4', '* 2'),\n"
-            "  the agent loop handles it directly before you see it.\n\n"
-            "FILE-TYPE ROUTING:\n"
-            "  • .pdf → read_pdf / write_pdf   • .docx → read_docx / write_docx\n"
-            "  • .py/.cs/.js/.ts/.md/.txt/.json/.yml → read_file / write_file / edit_file\n"
-            "  • file too large for read_file → read_file_chunk (line or byte range)\n"
-            "  • missing Python lib → install_package (supply a clear reason)\n\n"
-            "RULES:\n"
-            "  • edit_file: old_string must match EXACTLY (whitespace included). If it fails,\n"
-            "    re-read the file and copy the exact text before retrying.\n"
-            "  • All write_* / edit_file / run_command / python_exec / install_package / delete_file\n"
-            "    ask the user for permission — just call them. If denied, stop and report.\n"
-            "  • If the user gave a DIRECTORY as output location (no filename), ASK the user\n"
-            "    for a filename BEFORE writing. Do not invent one.\n"
-            "  • If the user asked for an image (no extension specified), generate_image\n"
-            "    saves to ./data/generated/ automatically — that's fine; mention the path.\n"
-            "  • For trivial questions (no fs/web needed), answer directly — no plan, no tools.\n"
-            "  • Heavy explorations → delegate with the `task` tool to a sub-agent.\n"
-            "  • The <environment> and <tools> blocks below are authoritative — use them.\n\n"
-            "EXAMPLES — chat vs. file output:\n"
-            "  • When a tool returns markdown like '![…](path)' (image link),\n"
-            "    include that markdown VERBATIM in your final answer — the UI\n"
-            "    will render the image inline. DO NOT replace it with 'saved at\n"
-            "    <path>' or just print the path; the user wants to SEE the image.\n"
-            "  • 'Write me a poem about autumn' → text in chat. NO file.\n"
-            "  • 'Write a haiku to autumn.txt' → write_file('autumn.txt', '<haiku>').\n"
-            "  • 'Introduce a person named Nam in EN and JP' → text in chat with two\n"
-            "    paragraphs. NO files.\n"
-            "  • 'Save that introduction to nam.md' → THEN call write_file.\n"
-            "  • 'Draft a report' → chat. 'Draft a report into report.pdf' → write_pdf.\n"
-            "  • 'Generate an image of X' → call generate_image; the PNG path comes back.\n"
-            "  • 'Viết một bài thơ' → text in chat. 'Viết một bài thơ vào tho.txt' → file."
-        ),
+        "system_prompt": MAIN_SYSTEM_PROMPT,
         "model": CHAT_MODEL,
         "tools": [
             # ── High-frequency / high-leverage tools FIRST ────────────
@@ -260,6 +179,8 @@ AGENT_PROFILES = {
             "list_processes", "kill_process",
             # v4 Slice 4 — self-learning tools (rare)
             "save_lesson", "learn_from_file", "learn_from_url", "update_self",
+            # v5 — self-evolving skills + deep research
+            "save_skill", "list_skills", "delete_skill", "deep_research",
         ],
         "verify": "off",  # Slice 5 enables CoVe wrapper when set to "high"
     },
@@ -269,11 +190,7 @@ AGENT_PROFILES = {
             "task needs reading/comparing 3+ web sources or RAG docs and citing them. "
             "NOT for single-URL lookups (main handles those)."
         ),
-        "system_prompt": (
-            "You are a Deep Research Specialist. Use `query_rag` against the local "
-            "corpus first; if it returns NO_DATA or scores are weak, fall back to "
-            "`search_web` + `fetch_url`. Cite every fact with its source."
-        ),
+        "system_prompt": RESEARCHER_SYSTEM_PROMPT,
         "model": "glm-4.7-flash:latest",
         "tools": [
             "read_file", "list_dir",
@@ -281,6 +198,8 @@ AGENT_PROFILES = {
             # v4 Slice 3 — web/resource tools (researcher is the prime consumer)
             "extract_text", "github_search_repos", "github_read_file", "github_releases",
             "pypi_search", "pypi_info", "youtube_transcript", "wikipedia_summary",
+            # v5 — multi-round research + skill memory
+            "deep_research", "save_skill", "list_skills",
         ],
         "verify": "off",
     },
@@ -290,7 +209,7 @@ AGENT_PROFILES = {
             "bug-hunting across many files, pattern/convention audits, explaining "
             "unfamiliar code. NOT for edits (main does edits itself)."
         ),
-        "system_prompt": "You are a Code Analysis Specialist. Focus on implementation details, patterns, and bug hunting.",
+        "system_prompt": CODER_SYSTEM_PROMPT,
         "model": CHAT_MODEL,
         "tools": [
             "read_file", "list_dir", "search_web", "grep_file", "glob_files",
@@ -305,7 +224,7 @@ AGENT_PROFILES = {
             "Terse summary generator for Discord — takes long content, returns "
             "short bullets. Delegate for final output compression only."
         ),
-        "system_prompt": "You are a Summary Specialist. Take complex information and turn it into a concise, bulleted summary for Discord.",
+        "system_prompt": SUMMARIZER_SYSTEM_PROMPT,
         "model": CHAT_MODEL,
         "tools": [],
         "verify": "off",
@@ -319,18 +238,7 @@ AGENT_PROFILES = {
             "Use when the user uploads an image, a screenshot, or asks "
             "you to look at something visual."
         ),
-        "system_prompt": (
-            "You are a vision-capable assistant. The user has shared "
-            "an image (path passed in the conversation). Your job:\n"
-            "  1. Call `describe_image` (or `screenshot_and_describe`) "
-            "with the path the user provided.\n"
-            "  2. Read the description and answer the user's actual "
-            "question about the image — error messages, UI elements, "
-            "diagrams, text content, etc.\n"
-            "  3. If `describe_image` returns FILE_NOT_FOUND for the "
-            "vision model, tell the user to `ollama pull llava` (or set "
-            "config.VISION_MODEL to a model they have).\n"
-        ),
+        "system_prompt": VISION_SPECIALIST_SYSTEM_PROMPT,
         "model": CHAT_MODEL,   # main agent stays a text model;
                                       # the vision *tool* does the vision call.
         "tools": [
@@ -348,20 +256,7 @@ AGENT_PROFILES = {
             "CAD / AutoCAD knowledge specialist — queries the local RAG corpus. "
             "Reached via the `cad-rag` virtual model."
         ),
-        "system_prompt": (
-            "You are a CAD/AutoCAD knowledge assistant. Your knowledge base is "
-            "the local RAG corpus accessed via the `query_rag` tool.\n\n"
-            "Rules:\n"
-            "1. For CAD-related questions: CALL `query_rag` first with a focused query. "
-            "Read the returned chunks (each has a score and source file).\n"
-            "2. If `query_rag` returns 'NO_DATA' or all scores are below 0.4, say "
-            "\"the local knowledge base has insufficient data on this\" and STOP. "
-            "Do NOT fabricate answers from base model knowledge.\n"
-            "3. When chunks are good, CITE the source file(s) in your answer and "
-            "include the score for transparency.\n"
-            "4. For non-CAD questions, briefly say you only cover CAD topics and "
-            "suggest the user switch to another agent."
-        ),
+        "system_prompt": CAD_RAG_SPECIALIST_SYSTEM_PROMPT,
         "model": CHAT_MODEL,
         "tools": ["query_rag", "read_file", "list_dir"],
         "verify": "off",

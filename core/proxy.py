@@ -7,6 +7,7 @@ import json
 import mimetypes
 import multiprocessing
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -42,140 +43,27 @@ def _get_agent():
     from core.agent import run_agent
     return run_agent
 
-REAL_MODEL = CHAT_MODEL
-CAD_MODEL     = "cad-rag"
-UI_MODEL      = "ui-agent"
-CODE_MODEL    = "code-agent"
-WEB_MODEL     = "web-creep"
-BROWSER_MODEL = "browser-agent"
-DEEP_MODEL    = "deep-agent"
-AUTO_MODEL     = "auto-agent"
-VISION_MODEL_V = "vision-agent"   # v4 Slice 5
-
-VIRTUAL_MODELS = [CAD_MODEL, UI_MODEL, CODE_MODEL, WEB_MODEL, BROWSER_MODEL, DEEP_MODEL, AUTO_MODEL, VISION_MODEL_V]
-
-# (Legacy: CAD_SYSTEM + SCORING_THRESHOLD removed in v4. cad-rag now routes
-# through `cad-rag-specialist` profile + agentic query_rag tool. See config.py.)
-UI_SYSTEM = "You are a UI/Frontend specialist agent..."
-CODE_SYSTEM = "You are an autonomous coding agent..."
-BROWSER_SYSTEM = "You are browser-agent, a local browser data reader..."
-WEB_SYSTEM = "You are web-creep, an autonomous web research agent..."
-
-def _ensure_budget(messages: list, *, session_id: str = "") -> list:
-    """Server-side compaction safety net.
-
-    Thin wrapper around `MemoryEngine.compact()`. Persists the resulting
-    summary to the conversation store when a session_id is known so the
-    next turn can read it from T2 instead of relying on the client to
-    echo the marker block back.
-    """
-    if not messages:
-        return messages
-    try:
-        from core.providers import smart_provider as _sp
-        engine = mem.get_default_engine()
-        prior = engine.extract_summary(messages)
-        result = engine.compact(messages, summarizer=_sp, prior_summary=prior)
-        if result.fired:
-            log.info("compact safety-net fired", extra={"session_id": session_id})
-            if session_id:
-                get_store().note(session_id, summary=result.summary)
-        return result.messages
-    except Exception as e:  # noqa: BLE001 — never fail a request on this
-        log.warning(f"compact safety-net failed (non-fatal): {e}", extra={"session_id": session_id})
-        return messages
-
-
-def _inject_system(messages: list, system: str, *, session_id: str = "") -> list:
-    """Replace the system prompt for forward-only specialists (ui-agent,
-    web-creep, browser-agent). Always merges the virtual-model `system`
-    with any carried summary; any non-summary system message from the
-    client is appended below ours rather than skipped.
-
-    v4 Slice 0.3: dropped the legacy early-return that silently kept the
-    client's system message instead of merging ours — that path could
-    swallow `UI_SYSTEM` / `WEB_SYSTEM` entirely.
-    """
-    engine = mem.get_default_engine()
-    carried = ""
-    if session_id:
-        sess = get_store().get(session_id)
-        if sess and sess.summary:
-            carried = sess.summary
-    if not carried:
-        carried = engine.extract_summary(messages)
-    merged = engine.merge_summary(system, carried)
-    out = [{"role": "system", "content": merged}]
-    for m in messages:
-        if m.get("role") == "system":
-            # Fold any non-summary system content the caller sent into ours.
-            if not mem._looks_like_summary(mem._content_text(m)):
-                out[0]["content"] = out[0]["content"] + "\n\n" + mem._content_text(m)
-            continue
-        out.append(m)
-    return out
-
-def _session_id_from_request(headers: dict, payload: dict) -> str:
-    """Derive a stable session_id for this chat request.
-
-    Order of preference:
-      1. `X-Session-Id` HTTP header (UI / Discord adapter / MCP send it).
-      2. `session_id` field in the JSON body (some clients prefer body).
-      3. Hash of (first user message + today's date) — fallback for
-         vanilla Ollama clients that ship no identity at all.
-    """
-    explicit = ""
-    if isinstance(headers, dict):
-        for k, v in headers.items():
-            if k.lower() == "x-session-id":
-                explicit = (v or "").strip()
-                break
-    if not explicit and isinstance(payload, dict):
-        explicit = (payload.get("session_id") or "").strip()
-    return derive_session_id(payload.get("messages", []) if isinstance(payload, dict) else [], explicit=explicit)
-
-
-def _last_user_msg(messages: list) -> str:
-    for msg in reversed(messages):
-        if msg.get("role") == "user":
-            c = msg.get("content", "")
-            if isinstance(c, list):
-                return " ".join(p.get("text", "") for p in c if p.get("type") == "text")
-            return str(c)
-    return ""
-
-def _forward(path: str, body: bytes, headers: dict):
-    url = OLLAMA_BASE + path
-    req = urllib.request.Request(url, data=body, method="POST")
-    for k, v in headers.items():
-        if k.lower() in ("content-type", "accept"):
-            req.add_header(k, v)
-    try:
-        with urllib.request.urlopen(req, timeout=300) as r:
-            return r.status, r.read(), r.headers.get("Content-Type", "application/json")
-    except urllib.error.HTTPError as e:
-        return e.code, e.read(), "application/json"
-    except Exception as e:
-        return 500, json.dumps({"error": str(e)}).encode(), "application/json"
-
-def _tags_with_virtual() -> bytes:
-    try:
-        with urllib.request.urlopen(OLLAMA_BASE + "/api/tags", timeout=5) as r:
-            data = json.loads(r.read())
-    except Exception:
-        data = {"models": []}
-    virtual = [
-        {"name": CAD_MODEL, "model": CAD_MODEL, "modified_at": "2026-01-01T00:00:00Z", "size": 0, "details": {"parameter_size": "7.6B", "family": "CAD/AutoCAD RAG agent"}},
-        {"name": UI_MODEL, "model": UI_MODEL, "modified_at": "2026-01-01T00:00:00Z", "size": 0, "details": {"parameter_size": "7.6B", "family": "UI/Frontend agent"}},
-        {"name": CODE_MODEL, "model": CODE_MODEL, "modified_at": "2026-01-01T00:00:00Z", "size": 0, "details": {"parameter_size": "7.6B", "family": "Agentic code agent"}},
-        {"name": WEB_MODEL, "model": WEB_MODEL, "modified_at": "2026-01-01T00:00:00Z", "size": 0, "details": {"parameter_size": "7.6B", "family": "Web research agent"}},
-        {"name": BROWSER_MODEL, "model": BROWSER_MODEL, "modified_at": "2026-01-01T00:00:00Z", "size": 0, "details": {"parameter_size": "7.6B", "family": "Browser cookies/storage reader"}},
-        {"name": DEEP_MODEL, "model": DEEP_MODEL, "modified_at": "2026-01-01T00:00:00Z", "size": 0, "details": {"parameter_size": "19B", "family": "Deep reasoning agent (glm-4.7-flash)"}},
-        {"name": AUTO_MODEL, "model": AUTO_MODEL, "modified_at": "2026-01-01T00:00:00Z", "size": 0, "details": {"parameter_size": "7.6B", "family": "Smart Router Agent"}},
-        {"name": VISION_MODEL_V, "model": VISION_MODEL_V, "modified_at": "2026-01-01T00:00:00Z", "size": 0, "details": {"parameter_size": "?", "family": "Multimodal vision agent (llava)"}},
-    ]
-    data["models"] = virtual + data.get("models", [])
-    return json.dumps(data).encode()
+# ── Split-B re-exports ───────────────────────────────────────
+# The virtual-model registry, request preprocessing, raw forwarding, Discord
+# subprocess management, and server/runtime hardening were extracted into
+# sibling ``core/proxy_*.py`` modules (behavior-preserving). They're re-imported
+# here so (a) every symbol keeps its original ``core.proxy.<name>`` import path
+# and (b) ProxyHandler / main() keep referencing them as bare module globals.
+from core.proxy_virtual import (  # noqa: E402,F401  (re-export)
+    REAL_MODEL, CAD_MODEL, UI_MODEL, CODE_MODEL, WEB_MODEL, BROWSER_MODEL,
+    DEEP_MODEL, AUTO_MODEL, VISION_MODEL_V, RESEARCH_MODEL, VIRTUAL_MODELS,
+    UI_SYSTEM, CODE_SYSTEM, BROWSER_SYSTEM, WEB_SYSTEM, _tags_with_virtual,
+)
+from core.proxy_forward import _forward  # noqa: E402,F401  (re-export)
+from core.proxy_prep import (  # noqa: E402,F401  (re-export)
+    _ensure_budget, _inject_system, _session_id_from_request, _last_user_msg,
+)
+from core.proxy_discord import (  # noqa: E402,F401  (re-export)
+    _start_discord, _stop_discord, _discord_status,
+)
+from core.proxy_runtime import (  # noqa: E402,F401  (re-export)
+    ExclusiveThreadingHTTPServer, _assert_healthy_environment,
+)
 
 def _init_orchestrator():
     FILE_TOOLS, WEB_TOOLS = _get_tools()
@@ -185,35 +73,9 @@ def _init_orchestrator():
 orchestrator = _init_orchestrator()
 
 # ── Discord subprocess management ────────────────────────────
-_discord_proc = None
-
-def _start_discord():
-    global _discord_proc
-    if _discord_proc and _discord_proc.poll() is None:
-        return False, "Discord is already running"
-    bot_root = Path(__file__).parent.parent
-    python_exe = bot_root / "venv" / "Scripts" / "python.exe"
-    gateway_script = bot_root / "core" / "discord_gateway.py"
-    _discord_proc = subprocess.Popen(
-        [str(python_exe), str(gateway_script)],
-        cwd=str(bot_root),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    return True, "Discord connected"
-
-def _stop_discord():
-    global _discord_proc
-    if _discord_proc and _discord_proc.poll() is None:
-        _discord_proc.terminate()
-        _discord_proc.wait(timeout=5)
-        _discord_proc = None
-        return True, "Discord disconnected"
-    _discord_proc = None
-    return False, "Discord is not running"
-
-def _discord_status():
-    return _discord_proc is not None and _discord_proc.poll() is None
+# Moved to core/proxy_discord.py (Split B); re-imported above. The
+# ``_discord_proc`` global is owned by that module and mutated only through
+# _start_discord / _stop_discord / _discord_status.
 
 # ── Shutdown management ──────────────────────────────────────
 _server_ref = None
@@ -878,6 +740,15 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self._run_agent_response(messages, {}, specialist="vision-specialist", user_q=user_q, session_id=sid)
             return
 
+        if model == RESEARCH_MODEL and is_chat:
+            # v5: research-agent routes through the `researcher` specialist,
+            # which has the deep_research tool + web/RAG tools.
+            messages = _ensure_budget(payload.get("messages", []), session_id=sid)
+            messages = pipeline.prepare(messages, base_system="")
+            user_q = _last_user_msg(messages)
+            self._run_agent_response(messages, {}, specialist="researcher", user_q=user_q, session_id=sid)
+            return
+
         if model == DEEP_MODEL and is_chat:
             # Deep model gets its own compaction too — it's the most likely
             # to have a long context buildup since users pick it for complex
@@ -886,6 +757,27 @@ class ProxyHandler(BaseHTTPRequestHandler):
             payload["model"] = LARGE_MODEL
             raw = json.dumps(payload).encode()
             self._forward_and_reply(path, raw, session_id=sid)
+            return
+
+        # Defense in depth: a virtual model should have been handled by one of
+        # the branches above. If it reaches here, the orchestrator failed to
+        # initialize (e.g. missing deps / wrong Python) — forwarding it to
+        # Ollama would yield a confusing "model not found" 404. Return a clear
+        # error instead so the cause is obvious.
+        if is_chat and model in VIRTUAL_MODELS:
+            log.error(f"virtual model '{model}' reached forward path — orchestrator unavailable")
+            self.send_response(503)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "error": (
+                    f"Virtual model '{model}' could not be served — the agent "
+                    f"orchestrator is unavailable. This usually means the proxy "
+                    f"is running under the wrong Python (missing dependencies). "
+                    f"Restart with the venv: .\\start_theagent0.bat"
+                )
+            }).encode())
             return
 
         headers = dict(self.headers)
@@ -1004,8 +896,17 @@ class ProxyHandler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
+# ── Server hardening + environment guard ─────────────────────
+# ExclusiveThreadingHTTPServer and _assert_healthy_environment moved to
+# core/proxy_runtime.py (Split B); re-imported above. main() below references
+# them as module globals.
+
+
 def main():
     global _server_ref
+    # Guard the interpreter FIRST: a broken/system Python that can't serve the
+    # orchestrator is the historical cause of intermittent virtual-model 404s.
+    _assert_healthy_environment()
     # Enable session persistence so a restarted proxy still recognises
     # in-flight conversations from the same day. JSONL is best-effort —
     # request handling never blocks on disk IO.
@@ -1015,7 +916,49 @@ def main():
     except Exception as e:
         log.warning(f"session-store persistence disabled: {e}")
 
-    server = ThreadingHTTPServer(("localhost", PROXY_PORT), ProxyHandler)
+    # Preflight: refuse to start if another proxy already owns the port.
+    # On Windows, HTTPServer sets SO_REUSEADDR, so a second `python -m
+    # core.proxy` (e.g. accidentally launched with system Python instead of
+    # the venv) can silently CO-BIND port 11435. The OS then splits incoming
+    # connections between the two processes — and if one has a broken
+    # environment (missing deps → no orchestrator), virtual models like
+    # `auto-agent` get forwarded to Ollama and return an intermittent
+    # "model not found" 404. Fail fast instead.
+    import socket as _socket
+    _probe = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    _probe.settimeout(1.0)
+    try:
+        if _probe.connect_ex(("127.0.0.1", PROXY_PORT)) == 0:
+            print(
+                f"\n[proxy] ERROR: something is already listening on "
+                f"127.0.0.1:{PROXY_PORT}.\n"
+                f"        Another TheAgent0 proxy is probably running (check for a\n"
+                f"        stray `python -m core.proxy`, possibly under SYSTEM Python\n"
+                f"        instead of the venv). Stop it first, then relaunch:\n"
+                f"          Windows:  taskkill /F /IM python.exe   (or close that window)\n"
+                f"          then:     .\\start_theagent0.bat\n",
+                flush=True,
+            )
+            raise SystemExit(2)
+    finally:
+        _probe.close()
+
+    # Exclusive bind is the real guarantee against two proxies co-binding the
+    # port (the connect_ex preflight above is only a friendly early check and
+    # has an inherent TOCTOU race). If a second proxy races us to the port, the
+    # bind raises OSError here — turn that into a clear message, not a traceback.
+    try:
+        server = ExclusiveThreadingHTTPServer(("localhost", PROXY_PORT), ProxyHandler)
+    except OSError as e:
+        print(
+            f"\n[proxy] ERROR: cannot bind 127.0.0.1:{PROXY_PORT} ({e}).\n"
+            f"        Another TheAgent0 proxy already owns this port (exclusive\n"
+            f"        bind). Stop it first, then relaunch:\n"
+            f"          Windows:  taskkill /F /IM python.exe   (or close that window)\n"
+            f"          then:     .\\start_theagent0.bat\n",
+            flush=True,
+        )
+        raise SystemExit(2)
     server.daemon_threads = True
     _server_ref = server
 
@@ -1027,6 +970,7 @@ def main():
         f"  web-creep     -> agentic web search/fetch loop\n"
         f"  browser-agent -> local Chrome/Edge cookies & storage reader\n"
         f"  deep-agent    -> deep reasoning [{LARGE_MODEL}]\n"
+        f"  research-agent-> multi-round web research + visual HTML report\n"
         f"  auto-agent    -> Smart Orchestrator (delegates to sub-agents)\n"
         f"  embed model    : mxbai-embed-large (Ollama)\n"
         f"  pipeline       : input preprocessing ACTIVE\n"

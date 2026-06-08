@@ -20,23 +20,72 @@ Tool handlers may return either `ToolResult` (preferred — that's what
 the new `core.tools` returns) or `str` (legacy). String returns get
 adapted via `ToolResult.from_legacy()` so a half-migrated codebase
 still works.
+
+Parsing, micro-compaction, the arithmetic fast-path, and tool-result
+rendering live in sibling modules (`core.agent_parsing`,
+`core.agent_compaction`, `core.agent_fastpath`, `core.agent_results`) and
+are re-exported below so existing `from core.agent import …` paths keep
+working unchanged.
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
-import operator as _op
 import re
 import sys
 import time as _time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from core.providers import SAMPLING_CREATIVE, smart_provider
 from core.tool_schema import ErrorCode, Tool, ToolRegistry, ToolResult
+
+# ── Re-exported helpers (split into sibling modules; kept importable from
+#    core.agent so existing import paths & monkeypatch targets still work). ──
+from core.agent_parsing import (
+    ToolsArg,
+    _ACTION_RE,
+    _BARE_JSON_RE,
+    _FENCE_RE,
+    _TAG_OPEN_RE,
+    _TAG_RE,
+    _TOOL_ATTEMPT_MARKERS,
+    _detect_malformed_tool_attempt,
+    _parse_error_nudge,
+    _parse_tool_uses,
+    _resolve_tool,
+    _scan_json_after,
+    _strip_tool_uses,
+    _tool_names,
+    _write_nudge_text,
+)
+from core.agent_compaction import (
+    MICRO_COMPACT_DIGEST_CHARS,
+    MICRO_COMPACT_KEEP_TAIL,
+    MICRO_COMPACT_MIN_CHARS,
+    MICRO_COMPACT_PLACEHOLDER,
+    MICRO_COMPACT_TURNS,
+    _extract_digest,
+    _micro_compact,
+)
+from core.agent_fastpath import (
+    _FASTPATH_OPS,
+    _FASTPATH_RE,
+    _NUMBER_RE,
+    _extract_last_number,
+    _fmt_num,
+    _last_user_message,
+    _parse_number_token,
+    _try_arithmetic_fastpath,
+)
+from core.agent_results import (
+    _ARG_PRIORITY,
+    _args_hash,
+    _brief_args,
+    _format_results,
+    _render_result_block,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -86,10 +135,11 @@ TOOL_FAMILIES: Dict[str, str] = {
     # RAG / learning
     "query_rag": "rag", "learn_from_file": "rag",
     "learn_from_url": "rag", "save_lesson": "rag",
+    "save_skill": "rag", "list_skills": "rag", "delete_skill": "rag",
     # Clipboard
     "clipboard_read": "clipboard", "clipboard_write": "clipboard",
     # Meta
-    "task": "delegate",
+    "task": "delegate", "deep_research": "delegate",
 }
 TOOL_FAMILY_BUDGET = 4  # Max calls of any one family per task.
 
@@ -97,498 +147,6 @@ TOOL_FAMILY_BUDGET = 4  # Max calls of any one family per task.
 # inject a user-role nudge that forbids more tool calls and forces the
 # model to produce an answer (or a clarifying question) on the next turn.
 CONVERGE_INJECT_AFTER_TURN = 4
-
-# Micro-compaction — replace old verbose tool-result bodies with a
-# placeholder + digest once the conversation gets long. Keeps the most
-# recent results intact.
-MICRO_COMPACT_TURNS     = 6
-MICRO_COMPACT_MIN_CHARS = 1500
-MICRO_COMPACT_KEEP_TAIL = 2
-MICRO_COMPACT_PLACEHOLDER = (
-    "[Old tool result content cleared for context window — "
-    "re-run the tool if you need the full output again.]"
-)
-MICRO_COMPACT_DIGEST_CHARS = 180
-
-# Signatures suggesting the model TRIED to call a tool but emitted
-# malformed JSON. Used to distinguish "truly done" vs "broken syntax".
-_TOOL_ATTEMPT_MARKERS = re.compile(
-    r'(<tool_use\b|```tool_use\b|\bACTION:\s*\{|"(?:name|tool)"\s*:\s*"'
-    r'(?:write_file|edit_file|read_file|read_pdf|write_pdf|read_docx|write_docx|'
-    r'run_command|search_web|fetch_url|grep_file|glob_files|list_dir|python_exec|'
-    r'install_package|read_file_chunk)")',
-    re.IGNORECASE,
-)
-
-_TAG_RE      = re.compile(r"<tool_use>\s*(\{.*?\})\s*</tool_use>", re.DOTALL)
-_FENCE_RE    = re.compile(r"```tool_use\s*(\{.*?\})\s*```", re.DOTALL)
-_ACTION_RE   = re.compile(r"ACTION:\s*(\{.*?\})\s*(?=\n|$)", re.DOTALL)
-_TAG_OPEN_RE = re.compile(r"<tool_use>\s*", re.IGNORECASE)
-_BARE_JSON_RE = re.compile(r'\{\s*"(?:name|tool)"\s*:', re.IGNORECASE)
-
-
-ToolsArg = Union[Dict[str, Callable[[Dict[str, Any]], Any]], ToolRegistry]
-
-
-# ───────────────────────────────────────────────────────────────────────
-# JSON / tool_use parsing helpers
-# ───────────────────────────────────────────────────────────────────────
-
-
-def _scan_json_after(text: str, start: int) -> Optional[tuple]:
-    i = text.find("{", start)
-    if i < 0:
-        return None
-    try:
-        obj, end = json.JSONDecoder().raw_decode(text[i:])
-        return obj, i + end
-    except json.JSONDecodeError:
-        return None
-
-
-def _emit(cb: Optional[Callable], event):
-    if not cb:
-        return
-    try:
-        if isinstance(event, str):
-            cb({"type": "text", "text": event})
-        else:
-            cb(event)
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"[agent] stream_cb failed: {e}")
-
-
-def _resolve_tool(tools: ToolsArg, name: str):
-    """Return a callable(args) -> ToolResult|str|None for the named tool."""
-    if isinstance(tools, ToolRegistry):
-        t = tools.get(name)
-        return t.run if t else None
-    if isinstance(tools, dict):
-        fn = tools.get(name)
-        return fn if callable(fn) else None
-    return None
-
-
-def _tool_names(tools: ToolsArg) -> List[str]:
-    if isinstance(tools, ToolRegistry):
-        return tools.names()
-    if isinstance(tools, dict):
-        return sorted(tools.keys())
-    return []
-
-
-def _parse_tool_uses(content: str) -> List[Dict[str, Any]]:
-    """Extract all tool calls from an assistant message, in order, deduped.
-
-    Returns list of {"name": str, "input": dict}. Empty list = end_turn.
-    Invalid JSON sub-blocks get input={"__parse_error__": "…"}.
-    """
-    calls: List[Dict[str, Any]] = []
-
-    def _push(obj: Any) -> None:
-        if not isinstance(obj, dict):
-            return
-        name = obj.get("name") or obj.get("tool")
-        inp = obj.get("input") or obj.get("arguments") or {}
-        if not isinstance(inp, dict):
-            inp = {}
-        inp.pop("tool", None)
-        if name:
-            calls.append({"name": name, "input": inp})
-
-    pos = 0
-    for m in _TAG_OPEN_RE.finditer(content):
-        if m.start() < pos:
-            continue
-        parsed = _scan_json_after(content, m.end())
-        if not parsed:
-            continue
-        obj, end_idx = parsed
-        pos = end_idx
-        _push(obj)
-
-    if not calls:
-        for m in _FENCE_RE.finditer(content):
-            parsed = _scan_json_after(content, m.start(1) if m.lastindex else m.start())
-            if parsed:
-                _push(parsed[0])
-
-    if not calls:
-        pos = 0
-        for m in _BARE_JSON_RE.finditer(content):
-            if m.start() < pos:
-                continue
-            parsed = _scan_json_after(content, m.start())
-            if not parsed:
-                continue
-            obj, end_idx = parsed
-            if isinstance(obj, dict) and (obj.get("name") or obj.get("tool")) \
-               and (isinstance(obj.get("input"), dict) or isinstance(obj.get("arguments"), dict)):
-                pos = end_idx
-                _push(obj)
-
-    if not calls:
-        for m in _ACTION_RE.finditer(content):
-            try:
-                obj = json.loads(m.group(1))
-                name = obj.pop("tool", None)
-                if name:
-                    calls.append({"name": name, "input": obj})
-            except json.JSONDecodeError as e:
-                calls.append({"name": "?", "input": {"__parse_error__": str(e)}})
-
-    return calls
-
-
-def _strip_tool_uses(content: str) -> str:
-    """Remove tool-use blocks from assistant text — keep narration only."""
-    content = _TAG_RE.sub("", content)
-    content = _FENCE_RE.sub("", content)
-    content = _ACTION_RE.sub("", content)
-
-    def _strip_open(text: str) -> str:
-        out = []
-        i = 0
-        while True:
-            m = _TAG_OPEN_RE.search(text, i)
-            if not m:
-                out.append(text[i:])
-                break
-            out.append(text[i:m.start()])
-            parsed = _scan_json_after(text, m.end())
-            if not parsed:
-                out.append(text[m.start():m.end()])
-                i = m.end()
-                continue
-            _, end_idx = parsed
-            tail = text[end_idx:end_idx + 20]
-            closer = re.match(r"\s*</?tool_use>", tail, re.IGNORECASE)
-            i = end_idx + (closer.end() if closer else 0)
-        return "".join(out)
-    content = _strip_open(content)
-
-    def _strip_bare(text: str) -> str:
-        out = []
-        i = 0
-        while True:
-            m = _BARE_JSON_RE.search(text, i)
-            if not m:
-                out.append(text[i:])
-                break
-            parsed = _scan_json_after(text, m.start())
-            if not parsed:
-                out.append(text[i:m.end()])
-                i = m.end()
-                continue
-            obj, end_idx = parsed
-            if isinstance(obj, dict) and (obj.get("name") or obj.get("tool")) \
-               and (isinstance(obj.get("input"), dict) or isinstance(obj.get("arguments"), dict)):
-                out.append(text[i:m.start()])
-                i = end_idx
-            else:
-                out.append(text[i:m.end()])
-                i = m.end()
-        return "".join(out)
-    return _strip_bare(content).strip()
-
-
-def _detect_malformed_tool_attempt(content: str) -> Optional[str]:
-    if not content or not _TOOL_ATTEMPT_MARKERS.search(content):
-        return None
-    for m in _BARE_JSON_RE.finditer(content):
-        i = content.find("{", m.start())
-        if i < 0:
-            continue
-        try:
-            json.JSONDecoder().raw_decode(content[i:])
-            return None
-        except json.JSONDecodeError as e:
-            snippet = content[i:i + 240].replace("\n", "\\n")
-            return f"JSONDecodeError at pos {e.pos}: {e.msg}. Offending snippet: {snippet}…"
-    return "Tool-use marker present but no valid JSON object could be extracted."
-
-
-def _parse_error_nudge(diag: str, retry_idx: int) -> str:
-    escalations = [
-        ("Your previous message looked like a tool_use call but its JSON was "
-         "malformed. Re-emit using this EXACT format:\n"
-         "<tool_use>{\"name\": \"<tool>\", \"input\": {\"path\": \"...\", \"content\": \"...\"}}</tool_use>\n"
-         "Rules for the `content` string:\n"
-         "  • Escape every newline as \\n (NOT a raw line break).\n"
-         "  • Escape every double-quote as \\\".\n"
-         "  • Escape every backslash as \\\\.\n"
-         "Emit ONE tool_use block only."),
-        ("Still malformed. Your content string is probably too long with too many "
-         "fragile escapes. Strategy: write the first ~2KB with write_file, then "
-         "append the rest with edit_file. Split the work."),
-        ("Final retry. Emit a MINIMAL <tool_use> with very short content (<500 chars). "
-         "If you cannot produce valid JSON, stop and tell the user which tool you were "
-         "trying to call and why it failed."),
-    ]
-    idx = min(retry_idx, len(escalations) - 1)
-    return f"{escalations[idx]}\n\nParser diagnostic: {diag}"
-
-
-def _write_nudge_text(retry_idx: int) -> str:
-    escalations = [
-        ("You have NOT called a write_* tool yet, but the user asked to save the "
-         "result to a file. Emit ONE write_file / write_pdf / write_docx tool_use "
-         "now with the final content at the EXACT path the user requested."),
-        ("Still no write_* call. Use the EXACT filename and EXACT directory the "
-         "user specified. If content is long, write the first chunk now and "
-         "append with edit_file later."),
-        ("Last attempt. Either emit a valid write_* tool_use at the exact path, "
-         "or report clearly to the user that you cannot produce the file and why."),
-    ]
-    return escalations[min(retry_idx, len(escalations) - 1)]
-
-
-# ───────────────────────────────────────────────────────────────────────
-# Tool result rendering / packing
-# ───────────────────────────────────────────────────────────────────────
-
-
-_ARG_PRIORITY = ("path", "command", "url", "query", "pattern", "agent")
-
-
-def _args_hash(name: str, args: Dict[str, Any]) -> str:
-    """Stable hash of (tool_name, args). Used to detect Stop-the-Line."""
-    try:
-        canonical = json.dumps({"n": name, "a": args}, sort_keys=True, default=str)
-    except Exception:
-        canonical = f"{name}::{args!r}"
-    return hashlib.sha1(canonical.encode("utf-8")).hexdigest()[:16]
-
-
-def _brief_args(args: Dict[str, Any], limit: int = 160) -> str:
-    """Compact arg one-liner — keeps identifying keys so micro-compacted
-    placeholders still tell the model which target was queried."""
-    if not isinstance(args, dict) or not args:
-        return ""
-    pieces: List[str] = []
-    seen = set()
-    for k in _ARG_PRIORITY:
-        if k in args:
-            seen.add(k)
-            v = str(args[k])[:80].replace("\n", " ").replace('"', "'")
-            pieces.append(f"{k}={v}")
-    for k, v in args.items():
-        if k in seen:
-            continue
-        s = str(v)[:40].replace("\n", " ").replace('"', "'")
-        pieces.append(f"{k}={s}")
-        if len(pieces) >= 4:
-            break
-    out = " ".join(pieces).replace("<", "‹").replace(">", "›")
-    return out[:limit]
-
-
-def _extract_digest(body: str, limit: int = MICRO_COMPACT_DIGEST_CHARS) -> str:
-    if not body:
-        return ""
-    text = re.sub(r"\s+", " ", body).strip()
-    return text[:limit] + ("…" if len(text) > limit else "")
-
-
-def _micro_compact(conversation: List[Dict[str, Any]]) -> int:
-    """Replace old verbose tool_result bodies with a placeholder + digest.
-
-    Defense-in-depth: never touch the last assistant message in the
-    conversation. The current implementation only mutates user-role
-    messages with `<tool_result>` blocks, but if compaction ever extends
-    to assistant turns we want to keep the most recent final answer
-    around — it's the anchor for "our last result" reference resolution.
-    """
-    last_assistant_idx = -1
-    for i in range(len(conversation) - 1, -1, -1):
-        if conversation[i].get("role") == "assistant":
-            last_assistant_idx = i
-            break
-    tool_feedback_indices: List[int] = []
-    for i, m in enumerate(conversation):
-        if i == last_assistant_idx:
-            continue
-        if m.get("role") != "user":
-            continue
-        body = m.get("content", "")
-        if isinstance(body, str) and "<tool_result" in body and len(body) > MICRO_COMPACT_MIN_CHARS:
-            tool_feedback_indices.append(i)
-    to_compact = (
-        tool_feedback_indices[:-MICRO_COMPACT_KEEP_TAIL]
-        if len(tool_feedback_indices) > MICRO_COMPACT_KEEP_TAIL else []
-    )
-    compacted = 0
-    for idx in to_compact:
-        if MICRO_COMPACT_PLACEHOLDER in (conversation[idx].get("content", "") or ""):
-            continue
-        orig = conversation[idx]["content"]
-
-        def _replace(m: "re.Match") -> str:
-            open_tag = m.group(1)
-            body = m.group(2)
-            close_tag = m.group(3)
-            digest = _extract_digest(body)
-            digest_line = f"Digest: {digest}" if digest else ""
-            return (
-                f"{open_tag}\n"
-                f"{MICRO_COMPACT_PLACEHOLDER}"
-                f"{chr(10) + digest_line if digest_line else ''}\n"
-                f"{close_tag}"
-            )
-
-        compact_body = re.sub(
-            r'(<tool_result[^>]*>)([\s\S]*?)(</tool_result>)',
-            _replace,
-            orig,
-        )
-        conversation[idx] = {"role": "user", "content": compact_body}
-        compacted += 1
-    return compacted
-
-
-def _render_result_block(name: str, args: Dict[str, Any], result: ToolResult) -> str:
-    """Render a single tool result as `<tool_result name=… args=… ...>body</tool_result>`."""
-    arg_str = _brief_args(args)
-    args_attr = f' args="{arg_str}"' if arg_str else ""
-    body = (result.output or "")[:2000]
-    if not result.ok:
-        attrs = [f'name="{name}"{args_attr}', 'is_error="true"']
-        if result.error_code is not None:
-            attrs.append(f'code="{result.error_code.value}"')
-        if result.hint:
-            safe_hint = result.hint.replace('"', "'")[:200]
-            attrs.append(f'hint="{safe_hint}"')
-        if not result.retryable:
-            attrs.append('retryable="false"')
-        return f"<tool_result {' '.join(attrs)}>\n{body}\n</tool_result>"
-    return f'<tool_result name="{name}"{args_attr} is_error="false">\n{body}\n</tool_result>'
-
-
-def _format_results(results: List[Dict[str, Any]], all_errors: bool) -> str:
-    blocks = [_render_result_block(r["name"], r["args"], r["result"]) for r in results]
-    footer = (
-        "\n\nAll tools errored — analyze each (see `code` / `hint` attrs) and emit "
-        "a corrected tool_use, or write your final answer if you're stuck."
-        if all_errors else
-        "\n\nContinue with the next tool_use, or write your final answer if done."
-    )
-    return "\n".join(blocks) + footer
-
-
-# ───────────────────────────────────────────────────────────────────────
-# Recent-exchange capture & arithmetic fast-path
-# ───────────────────────────────────────────────────────────────────────
-
-# Matches "+ 4", "- 2.5", "* 10", "/3" — operator followed by a number,
-# possibly with whitespace, nothing else on the line.
-_FASTPATH_RE = re.compile(r"^\s*([+\-*/])\s*(-?\d+(?:\.\d+)?)\s*$")
-
-# Matches any number in a string. Vietnamese / European thousand separators
-# use "." and decimal commas; English uses commas as thousand separators.
-# We accept both by stripping commas before float() and treating "," as the
-# decimal point only when it's the LAST grouping in the token.
-_NUMBER_RE = re.compile(r"-?\d{1,3}(?:[.,]\d{3})*(?:[.,]\d+)?|-?\d+(?:[.,]\d+)?")
-
-_FASTPATH_OPS = {
-    "+": _op.add,
-    "-": _op.sub,
-    "*": _op.mul,
-    "/": _op.truediv,
-}
-
-
-def _parse_number_token(tok: str) -> Optional[float]:
-    """Parse a number that may use comma or dot as decimal/thousand separator."""
-    if not tok:
-        return None
-    # Strategy: if both `,` and `.` appear, treat the LAST one as the decimal
-    # and the others as grouping. If only one appears with 3 digits after it,
-    # it's a thousand separator; otherwise it's the decimal point.
-    last_dot = tok.rfind(".")
-    last_com = tok.rfind(",")
-    if last_dot >= 0 and last_com >= 0:
-        if last_dot > last_com:
-            cleaned = tok.replace(",", "")
-        else:
-            cleaned = tok.replace(".", "").replace(",", ".")
-    elif last_com >= 0:
-        # only commas
-        tail = tok[last_com + 1:]
-        if len(tail) == 3 and tail.isdigit():
-            cleaned = tok.replace(",", "")  # thousand grouping
-        else:
-            cleaned = tok.replace(",", ".")  # decimal
-    elif last_dot >= 0:
-        # only dots — assume decimal point
-        cleaned = tok
-    else:
-        cleaned = tok
-    try:
-        return float(cleaned)
-    except ValueError:
-        return None
-
-
-def _extract_last_number(text: str) -> Optional[float]:
-    """Return the LAST number that appears in `text`, or None if none found.
-
-    Used to capture the numeric answer from an assistant turn like
-    "1+1 = 2" → 2.0 or "the total is 1,234.5" → 1234.5.
-    """
-    if not text:
-        return None
-    matches = _NUMBER_RE.findall(text)
-    for tok in reversed(matches):
-        val = _parse_number_token(tok)
-        if val is not None:
-            return val
-    return None
-
-
-def _last_user_message(messages: List[Dict[str, Any]]) -> str:
-    for m in reversed(messages):
-        if m.get("role") == "user":
-            c = m.get("content", "")
-            if isinstance(c, list):
-                return " ".join(
-                    p.get("text", "") for p in c
-                    if isinstance(p, dict) and p.get("type") == "text"
-                )
-            return str(c or "")
-    return ""
-
-
-def _try_arithmetic_fastpath(user_msg: str, prev_numeric: Optional[float]) -> Optional[str]:
-    """If `user_msg` is a pure operator-leading expression (e.g. "+ 4") and
-    `prev_numeric` is known, evaluate and return a formatted answer.
-    Returns None when the message doesn't qualify or no anchor exists."""
-    if prev_numeric is None or not user_msg:
-        return None
-    m = _FASTPATH_RE.match(user_msg)
-    if not m:
-        return None
-    op_sym, operand_tok = m.group(1), m.group(2)
-    try:
-        operand = float(operand_tok)
-    except ValueError:
-        return None
-    fn = _FASTPATH_OPS.get(op_sym)
-    if fn is None:
-        return None
-    if op_sym == "/" and operand == 0.0:
-        return f"{_fmt_num(prev_numeric)} / 0 = undefined (cannot divide by zero)"
-    try:
-        result = fn(prev_numeric, operand)
-    except (ZeroDivisionError, OverflowError, ValueError) as e:
-        return f"{_fmt_num(prev_numeric)} {op_sym} {operand_tok} = error ({e})"
-    return f"{_fmt_num(prev_numeric)} {op_sym} {_fmt_num(operand)} = {_fmt_num(result)}"
-
-
-def _fmt_num(x: float) -> str:
-    """Render a float without trailing ".0" when it's whole."""
-    if x == int(x) and abs(x) < 1e16:
-        return str(int(x))
-    return f"{x:g}"
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -630,6 +188,23 @@ def _looks_creative(user_msg: str) -> bool:
 
 
 # ───────────────────────────────────────────────────────────────────────
+# Stream helper
+# ───────────────────────────────────────────────────────────────────────
+
+
+def _emit(cb: Optional[Callable], event):
+    if not cb:
+        return
+    try:
+        if isinstance(event, str):
+            cb({"type": "text", "text": event})
+        else:
+            cb(event)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[agent] stream_cb failed: {e}")
+
+
+# ───────────────────────────────────────────────────────────────────────
 # Main loop
 # ───────────────────────────────────────────────────────────────────────
 
@@ -641,6 +216,7 @@ def run_agent(
     max_turns: int = MAX_TURNS,
     *,
     session_id: Optional[str] = None,
+    tool_policy=None,
 ) -> str:
     """Run the agent loop.
 
@@ -649,6 +225,11 @@ def run_agent(
     "files touched this session" in subsequent turns. None means the call
     came from a non-session context (legacy run_agent direct invocation);
     file tracking just no-ops in that case.
+
+    `tool_policy` (optional `core.security.ToolPolicy`) hard-blocks tool calls
+    the user forbade this turn (e.g. "don't use any tools"). When a blocked
+    tool is requested the loop returns a typed PERMISSION_DENIED result instead
+    of invoking the handler — enforcement, not prompt compliance.
     """
     conversation = list(messages)
     error_streak = 0
@@ -873,6 +454,15 @@ def run_agent(
                     hint="Re-emit the tool_use with valid JSON.",
                     retryable=True,
                 )
+            elif tool_policy is not None and tool_policy.blocks(name):
+                # Guide-only / denylisted turn — refuse without invoking.
+                result = ToolResult.error(
+                    ErrorCode.PERMISSION_DENIED,
+                    f"Tool '{name}' is blocked this turn: {tool_policy.reason_for(name)}",
+                    hint="The user forbade tool use this turn. Answer in plain text instead.",
+                    retryable=False,
+                )
+                logger.info("[agent] tool_policy blocked '%s' (mode=%s)", name, getattr(tool_policy, "mode", "?"))
             else:
                 handler = _resolve_tool(tools, name)
                 if handler is None:

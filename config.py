@@ -98,6 +98,15 @@ OLLAMA_AUTO_PULL = False
 # Off by default — flip on once you've seen save_skill / list_skills work.
 SKILLS_AUTO_EXTRACT = False
 
+# ── Compare (blind side-by-side model eval, v6 — ported from odysseus) ──
+# How many models a single blind comparison may run (the UI checklist and the
+# /api/compare/run endpoint both enforce this). Each model runs in its own
+# thread, so the wall-clock cost is ~1× latency regardless of the count.
+COMPARE_MAX_MODELS = 4
+# Per-comparison wall-clock cap (seconds). A model that doesn't answer in time
+# becomes an error slot instead of blocking the whole comparison.
+COMPARE_TIMEOUT_S = 120
+
 # ── Model Provider Configuration ───────────────────────────────
 # Primary is tried first; on token-exhaust / error / 401 we fall
 # back to the local provider.

@@ -118,6 +118,15 @@
             <button onclick="switchTab('logs')" id="tab-logs" class="px-4 py-1.5 rounded-lg text-sm font-medium text-slate-400 hover:text-slate-200 transition-all">
                 <i class="fas fa-list-ul mr-2"></i> Logs
             </button>
+            <button onclick="switchTab('compare')" id="tab-compare" class="px-4 py-1.5 rounded-lg text-sm font-medium text-slate-400 hover:text-slate-200 transition-all">
+                <i class="fas fa-scale-balanced mr-2"></i> Compare
+            </button>
+            <button onclick="switchTab('skills')" id="tab-skills" class="px-4 py-1.5 rounded-lg text-sm font-medium text-slate-400 hover:text-slate-200 transition-all">
+                <i class="fas fa-graduation-cap mr-2"></i> Skills
+            </button>
+            <button onclick="switchTab('research')" id="tab-research" class="px-4 py-1.5 rounded-lg text-sm font-medium text-slate-400 hover:text-slate-200 transition-all">
+                <i class="fas fa-flask mr-2"></i> Research
+            </button>
         </div>
 
         <div class="flex items-center gap-3">
@@ -368,6 +377,83 @@
             </div>
             <div id="logs-panel" class="flex-1 overflow-auto bg-slate-950 border border-slate-800 rounded-xl p-3 custom-scrollbar" style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;line-height:1.55">
                 <div class="text-slate-600 text-center py-8 text-xs">Waiting for events…</div>
+            </div>
+        </div>
+
+        <!-- TAB 7: COMPARE (blind side-by-side model eval) -->
+        <div id="content-compare" class="tab-content h-full overflow-y-auto p-8 custom-scrollbar">
+            <div class="max-w-6xl mx-auto">
+                <div class="mb-6">
+                    <h2 class="text-2xl font-bold text-slate-200">Blind Compare</h2>
+                    <p class="text-slate-400">Run one prompt across several models, read the answers blind, then reveal the winner.</p>
+                </div>
+
+                <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-500 uppercase mb-1">Prompt</label>
+                        <textarea id="compare-prompt" rows="3" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-indigo-500 resize-none custom-scrollbar" placeholder="Ask the same thing of every model…"></textarea>
+                    </div>
+                    <div>
+                        <div class="flex items-center justify-between mb-1">
+                            <label class="block text-xs font-semibold text-slate-500 uppercase">Models <span id="compare-model-count" class="text-slate-600 normal-case"></span></label>
+                            <button onclick="renderCompareModels()" class="text-xs text-slate-400 hover:text-slate-200"><i class="fas fa-rotate mr-1"></i> Refresh</button>
+                        </div>
+                        <div id="compare-model-list" class="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-40 overflow-y-auto custom-scrollbar p-1"></div>
+                    </div>
+                    <div class="flex items-center justify-between">
+                        <span id="compare-status" class="text-xs text-slate-500"></span>
+                        <button id="compare-run-btn" onclick="runCompare()" class="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-2 rounded-lg font-medium transition-all">
+                            <i class="fas fa-scale-balanced mr-2"></i> Run blind comparison
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Results -->
+                <div id="compare-results" class="mt-6 hidden">
+                    <div class="flex items-center justify-between mb-3">
+                        <h3 class="text-lg font-bold text-slate-200">Results <span id="compare-reveal-hint" class="text-xs font-normal text-slate-500"></span></h3>
+                    </div>
+                    <div id="compare-grid" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
+                </div>
+
+                <!-- History -->
+                <div class="mt-10">
+                    <div class="flex items-center justify-between mb-3">
+                        <h3 class="text-sm font-semibold text-slate-500 uppercase tracking-wider">Recent comparisons</h3>
+                        <button onclick="loadCompareHistory()" class="text-xs text-slate-400 hover:text-slate-200"><i class="fas fa-rotate mr-1"></i> Refresh</button>
+                    </div>
+                    <div id="compare-history" class="space-y-2"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB 8: SKILLS (learned, reusable procedures) -->
+        <div id="content-skills" class="tab-content h-full overflow-y-auto p-8 custom-scrollbar">
+            <div class="max-w-5xl mx-auto">
+                <div class="mb-6 flex items-center justify-between">
+                    <div>
+                        <h2 class="text-2xl font-bold text-slate-200">Skills</h2>
+                        <p class="text-slate-400">Reusable procedures the agent has learned. Matched into the prompt when a task fits.</p>
+                    </div>
+                    <button onclick="loadSkills()" class="text-xs text-slate-400 hover:text-slate-200 border border-slate-700 rounded-lg px-3 py-1.5"><i class="fas fa-rotate mr-1"></i> Refresh</button>
+                </div>
+                <div id="skills-status" class="text-xs text-slate-500 mb-3"></div>
+                <div id="skills-list" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
+            </div>
+        </div>
+
+        <!-- TAB 9: RESEARCH (Deep-Research report viewer) -->
+        <div id="content-research" class="tab-content h-full overflow-y-auto p-8 custom-scrollbar">
+            <div class="max-w-4xl mx-auto">
+                <div class="mb-6 flex items-center justify-between">
+                    <div>
+                        <h2 class="text-2xl font-bold text-slate-200">Research reports</h2>
+                        <p class="text-slate-400">Cited HTML reports from the <code class="text-indigo-300">research-agent</code>. Click to open.</p>
+                    </div>
+                    <button onclick="loadResearch()" class="text-xs text-slate-400 hover:text-slate-200 border border-slate-700 rounded-lg px-3 py-1.5"><i class="fas fa-rotate mr-1"></i> Refresh</button>
+                </div>
+                <div id="research-status" class="text-xs text-slate-500 mb-3"></div>
+                <div id="research-list" class="space-y-3"></div>
             </div>
         </div>
 
@@ -1447,11 +1533,310 @@
                 banner.classList.remove('hidden');
             }
         }
+        // ── Compare tab: blind side-by-side model eval ──
+        // Mirrors config.COMPARE_MAX_MODELS (server enforces the real cap).
+        const COMPARE_MAX_MODELS = 4;
+        const _SLOT_LETTERS = ['A', 'B', 'C', 'D', 'E', 'F'];
+        let _compareSelected = new Set();   // chosen installed model names
+        let _compareCurrent = null;         // last run / vote response
+
+        function _cmpCheckboxId(name) { return 'cmp-m-' + name.replace(/[^a-zA-Z0-9]/g, '_'); }
+
+        function setCompareStatus(msg, kind) {
+            const el = $id('compare-status');
+            if (!el) return;
+            el.textContent = msg || '';
+            el.className = 'text-xs ' + (kind === 'warn' ? 'text-amber-400' : (kind === 'error' ? 'text-red-400' : 'text-slate-500'));
+        }
+
+        function updateCompareCount() {
+            const el = $id('compare-model-count');
+            if (el) el.textContent = `(${_compareSelected.size}/${COMPARE_MAX_MODELS} selected)`;
+        }
+
+        async function renderCompareModels() {
+            const wrap = $id('compare-model-list');
+            if (!wrap) return;
+            const models = await fetchLocalModels();   // size>0 only (no virtual agents)
+            wrap.innerHTML = '';
+            if (models.length === 0) {
+                wrap.innerHTML = '<div class="text-xs text-slate-600 col-span-full py-2">No local Ollama models found. Pull one, e.g. <code>ollama pull qwen3.5</code>.</div>';
+                updateCompareCount();
+                return;
+            }
+            // Drop any prior selections that no longer exist.
+            _compareSelected = new Set([..._compareSelected].filter(m => models.includes(m)));
+            models.forEach(name => {
+                const label = document.createElement('label');
+                label.className = 'flex items-center gap-2 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-300 cursor-pointer hover:border-indigo-500';
+                label.innerHTML = `<input type="checkbox" id="${_cmpCheckboxId(name)}" ${_compareSelected.has(name) ? 'checked' : ''}> <span class="truncate" title="${escapeHtml(name)}">${escapeHtml(name)}</span>`;
+                const cb = label.querySelector('input');
+                cb.onchange = () => toggleCompareModel(name, cb.checked);
+                wrap.appendChild(label);
+            });
+            updateCompareCount();
+        }
+
+        function toggleCompareModel(name, on) {
+            if (on) {
+                if (_compareSelected.size >= COMPARE_MAX_MODELS) {
+                    const cb = $id(_cmpCheckboxId(name));
+                    if (cb) cb.checked = false;
+                    setCompareStatus(`Pick at most ${COMPARE_MAX_MODELS} models.`, 'warn');
+                    return;
+                }
+                _compareSelected.add(name);
+                setCompareStatus('');
+            } else {
+                _compareSelected.delete(name);
+            }
+            updateCompareCount();
+        }
+
+        async function runCompare() {
+            const prompt = ($id('compare-prompt')?.value || '').trim();
+            const models = [..._compareSelected];
+            if (!prompt) { setCompareStatus('Enter a prompt first.', 'warn'); return; }
+            if (models.length < 2) { setCompareStatus('Pick at least 2 models.', 'warn'); return; }
+            const btn = $id('compare-run-btn');
+            if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i> Running…'; }
+            setCompareStatus(`Running ${models.length} models…`);
+            try {
+                const r = await fetch('/api/compare/run', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ prompt, models }),
+                });
+                const data = await r.json();
+                if (!r.ok) throw new Error(data.error || 'run failed');
+                _compareCurrent = data;
+                renderCompareResults(data);
+                setCompareStatus('Read the answers blind, then pick the best.');
+                loadCompareHistory();
+            } catch (e) {
+                setCompareStatus('Error: ' + e.message, 'error');
+            } finally {
+                if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-scale-balanced mr-2"></i> Run blind comparison'; }
+            }
+        }
+
+        function renderCompareResults(data) {
+            const box = $id('compare-results');
+            const grid = $id('compare-grid');
+            if (!box || !grid) return;
+            box.classList.remove('hidden');
+            const revealed = !!data.revealed;
+            const hint = $id('compare-reveal-hint');
+            if (hint) hint.textContent = revealed ? '· revealed' : '· blind — vote to reveal';
+            grid.innerHTML = '';
+            (data.slots || []).forEach(s => {
+                const letter = _SLOT_LETTERS[s.slot] || ('#' + s.slot);
+                const winner = revealed && s.is_winner;
+                const card = document.createElement('div');
+                card.className = 'bg-slate-900 border rounded-xl p-4 ' + (winner ? 'border-emerald-500 ring-1 ring-emerald-500/40' : 'border-slate-800');
+                const title = revealed
+                    ? `${escapeHtml(s.model || '?')}${winner ? ' <span class="text-emerald-400 text-xs">★ winner</span>' : ''}`
+                    : `Model ${letter}`;
+                const timing = `${s.latency_ms || 0}ms${s.completion_tokens ? ' · ' + s.completion_tokens + 'tok' : ''}${s.tok_per_sec ? ' · ' + s.tok_per_sec + 't/s' : ''}`;
+                let bodyHtml;
+                if (s.error) {
+                    bodyHtml = `<div class="text-sm text-red-400"><i class="fas fa-triangle-exclamation mr-1"></i>${escapeHtml(s.error)}</div>`;
+                } else if (window.marked && window.marked.parse) {
+                    try { bodyHtml = `<div class="markdown-body text-sm">${window.marked.parse(s.content || '')}</div>`; }
+                    catch (e) { bodyHtml = `<div class="text-sm" style="white-space:pre-wrap">${escapeHtml(s.content || '')}</div>`; }
+                } else {
+                    bodyHtml = `<div class="text-sm" style="white-space:pre-wrap">${escapeHtml(s.content || '')}</div>`;
+                }
+                card.innerHTML = `
+                    <div class="flex items-center justify-between mb-2">
+                        <h4 class="font-bold text-slate-200">${title}</h4>
+                        <span class="text-[10px] text-slate-500 font-mono">${timing}</span>
+                    </div>
+                    <div class="max-h-80 overflow-y-auto custom-scrollbar">${bodyHtml}</div>
+                    ${revealed ? '' : `<button onclick="voteCompare(${s.slot})" class="mt-3 w-full bg-indigo-600 hover:bg-indigo-500 text-white text-sm py-1.5 rounded-lg transition-all"><i class="fas fa-trophy mr-1"></i> Pick Model ${letter}</button>`}
+                `;
+                grid.appendChild(card);
+            });
+            if (window.hljs) {
+                grid.querySelectorAll('pre code').forEach(b => { try { window.hljs.highlightElement(b); } catch (e) {} });
+            }
+        }
+
+        async function voteCompare(slot) {
+            if (!_compareCurrent || !_compareCurrent.id) return;
+            setCompareStatus('Revealing…');
+            try {
+                const r = await fetch('/api/compare/vote', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id: _compareCurrent.id, slot }),
+                });
+                const data = await r.json();
+                if (!r.ok) throw new Error(data.error || 'vote failed');
+                _compareCurrent = data;
+                renderCompareResults(data);
+                const winSlot = (data.slots || []).find(s => s.is_winner);
+                setCompareStatus(winSlot ? `You picked: ${winSlot.model}` : 'Revealed.');
+                loadCompareHistory();
+            } catch (e) {
+                setCompareStatus('Error: ' + e.message, 'error');
+            }
+        }
+
+        async function loadCompareHistory() {
+            const wrap = $id('compare-history');
+            if (!wrap) return;
+            try {
+                const r = await fetch('/api/compare/history?limit=20');
+                if (!r.ok) return;
+                const { comparisons } = await r.json();
+                if (!comparisons || comparisons.length === 0) {
+                    wrap.innerHTML = '<div class="text-xs text-slate-600 py-2">No comparisons yet.</div>';
+                    return;
+                }
+                wrap.innerHTML = '';
+                comparisons.forEach(c => {
+                    const when = new Date((c.ts || 0) * 1000).toLocaleString();
+                    const winner = c.winner
+                        ? `<span class="text-emerald-400"><i class="fas fa-trophy mr-1"></i>${escapeHtml(c.winner)}</span>`
+                        : '<span class="text-slate-600">not voted</span>';
+                    const row = document.createElement('div');
+                    row.className = 'bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs flex items-center justify-between gap-3';
+                    row.innerHTML = `
+                        <div class="min-w-0">
+                            <div class="text-slate-300 truncate" title="${escapeHtml(c.prompt || '')}">${escapeHtml(c.prompt || '(no prompt)')}</div>
+                            <div class="text-slate-600 truncate">${escapeHtml((c.models || []).join(', '))} · ${when}</div>
+                        </div>
+                        <div class="shrink-0">${winner}</div>
+                    `;
+                    wrap.appendChild(row);
+                });
+            } catch (e) { /* silent */ }
+        }
+
+        // ── Skills tab: list learned procedures, allow delete ──────────
+        function _fmtBytes(n) {
+            n = Number(n) || 0;
+            if (n < 1024) return n + ' B';
+            if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+            return (n / 1024 / 1024).toFixed(1) + ' MB';
+        }
+
+        async function loadSkills() {
+            const wrap = $id('skills-list');
+            const status = $id('skills-status');
+            if (!wrap) return;
+            if (status) status.textContent = 'Loading…';
+            try {
+                const r = await fetch('/api/skills');
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                const { skills } = await r.json();
+                if (!skills || skills.length === 0) {
+                    wrap.innerHTML = '';
+                    if (status) status.textContent = 'No skills learned yet. They appear after complex agent runs (with SKILLS_AUTO_EXTRACT enabled) or when added by hand.';
+                    return;
+                }
+                if (status) status.textContent = skills.length + ' skill' + (skills.length === 1 ? '' : 's');
+                wrap.innerHTML = '';
+                skills.forEach(s => {
+                    const tags = (s.tags || []).map(t =>
+                        `<span class="text-[10px] bg-slate-800 text-slate-400 rounded px-1.5 py-0.5">${escapeHtml(t)}</span>`).join(' ');
+                    const steps = (s.procedure || []).slice(0, 8).map(x => `<li>${escapeHtml(x)}</li>`).join('');
+                    const pitfalls = (s.pitfalls || []).map(x => `<li>${escapeHtml(x)}</li>`).join('');
+                    const conf = Math.round((Number(s.confidence) || 0) * 100);
+                    const card = document.createElement('div');
+                    card.className = 'bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-lg';
+                    card.innerHTML = `
+                        <div class="flex items-start justify-between gap-3">
+                            <div class="min-w-0">
+                                <h3 class="text-base font-bold text-slate-200 truncate">${escapeHtml(s.name || '(unnamed)')}</h3>
+                                <p class="text-sm text-slate-400">${escapeHtml(s.description || '')}</p>
+                            </div>
+                            <button onclick="deleteSkill('${escapeHtml(s.name)}')" title="Delete skill"
+                                class="shrink-0 text-slate-600 hover:text-red-400 text-sm"><i class="fas fa-trash"></i></button>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-2 mt-2 text-[11px] text-slate-500">
+                            <span class="bg-slate-800 rounded px-1.5 py-0.5">${escapeHtml(s.category || 'general')}</span>
+                            <span>conf ${conf}%</span>
+                            <span>· used ${Number(s.uses) || 0}×</span>
+                            <span>· ${escapeHtml(s.source || 'learned')}</span>
+                        </div>
+                        ${s.when_to_use ? `<p class="text-xs text-slate-400 mt-3"><span class="text-slate-500 font-semibold">When:</span> ${escapeHtml(s.when_to_use)}</p>` : ''}
+                        ${steps ? `<ol class="list-decimal list-inside text-xs text-slate-300 mt-2 space-y-0.5">${steps}</ol>` : ''}
+                        ${pitfalls ? `<div class="text-xs text-amber-400/80 mt-2"><span class="font-semibold">Pitfalls:</span><ul class="list-disc list-inside">${pitfalls}</ul></div>` : ''}
+                        ${tags ? `<div class="flex flex-wrap gap-1 mt-3">${tags}</div>` : ''}
+                    `;
+                    wrap.appendChild(card);
+                });
+            } catch (e) {
+                if (status) status.textContent = 'Error: ' + e.message;
+            }
+        }
+
+        async function deleteSkill(name) {
+            if (!name) return;
+            if (!confirm('Delete skill "' + name + '"?')) return;
+            try {
+                await fetch('/api/skills/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name })
+                });
+            } catch (e) { /* ignore — refresh below shows real state */ }
+            loadSkills();
+        }
+
+        // ── Research tab: list saved Deep-Research HTML reports ─────────
+        async function loadResearch() {
+            const wrap = $id('research-list');
+            const status = $id('research-status');
+            if (!wrap) return;
+            if (status) status.textContent = 'Loading…';
+            try {
+                const r = await fetch('/api/research');
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                const { reports } = await r.json();
+                if (!reports || reports.length === 0) {
+                    wrap.innerHTML = '';
+                    if (status) status.textContent = 'No reports yet. Ask the research-agent a question to generate one.';
+                    return;
+                }
+                if (status) status.textContent = reports.length + ' report' + (reports.length === 1 ? '' : 's');
+                wrap.innerHTML = '';
+                reports.forEach(rep => {
+                    const when = new Date((rep.ts || 0) * 1000).toLocaleString();
+                    const md = rep.md_url
+                        ? `<a href="${escapeHtml(rep.md_url)}" target="_blank" rel="noopener" class="text-slate-500 hover:text-slate-300"><i class="fas fa-file-lines mr-1"></i>markdown</a>`
+                        : '';
+                    const row = document.createElement('div');
+                    row.className = 'bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-lg flex items-center justify-between gap-4 hover:border-indigo-600/50 transition-all';
+                    row.innerHTML = `
+                        <div class="min-w-0">
+                            <a href="${escapeHtml(rep.url)}" target="_blank" rel="noopener" class="text-slate-200 font-medium hover:text-indigo-300 block truncate" title="${escapeHtml(rep.title || rep.file)}">
+                                <i class="fas fa-flask text-indigo-400 mr-2"></i>${escapeHtml(rep.title || rep.file)}
+                            </a>
+                            <div class="text-xs text-slate-600 mt-1">${when} · ${_fmtBytes(rep.size)} · ${escapeHtml(rep.file)}</div>
+                        </div>
+                        <div class="shrink-0 text-xs flex items-center gap-3">
+                            ${md}
+                            <a href="${escapeHtml(rep.url)}" target="_blank" rel="noopener" class="text-indigo-400 hover:text-indigo-300"><i class="fas fa-arrow-up-right-from-square mr-1"></i>open</a>
+                        </div>
+                    `;
+                    wrap.appendChild(row);
+                });
+            } catch (e) {
+                if (status) status.textContent = 'Error: ' + e.message;
+            }
+        }
+
         // Refresh when user switches to Change Mode tab; also on first load.
         const _origSwitchTab = switchTab;
         switchTab = function(tabId) {
             _origSwitchTab(tabId);
             if (tabId === 'mode') refreshHealth();
+            if (tabId === 'compare') { renderCompareModels(); loadCompareHistory(); }
+            if (tabId === 'skills') loadSkills();
+            if (tabId === 'research') loadResearch();
         };
 
         // ── Logs tab: poll /api/logs/tail and render structured events ──

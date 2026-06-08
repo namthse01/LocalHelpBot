@@ -148,6 +148,54 @@ class ProxyHandler(BaseHTTPRequestHandler):
         # HTTP access lines go at DEBUG level — they're noisy (heartbeats, etc.)
         log.debug(fmt % args)
 
+    def _serve_data_file(self, subdir, allowed_exts=None):
+        """Serve one file from data/<subdir>/ with path-traversal protection.
+
+        Rejects absolute paths, drive letters, and ``..`` segments, then
+        confirms the resolved path still lives inside data/<subdir>/. When
+        ``allowed_exts`` is given (a set of lowercase suffixes like
+        ``{".html"}``), any other extension is refused. Sends the complete
+        HTTP response (status + body) itself.
+        """
+        rel = self.path[len("/data/"):]
+        # Strip query string before resolving on disk.
+        if "?" in rel:
+            rel = rel.split("?", 1)[0]
+        try:
+            decoded = urllib.parse.unquote(rel)
+        except Exception:
+            self.send_response(400); self.end_headers(); return
+        # Reject absolute paths, drive letters, traversal segments.
+        if (
+            decoded.startswith("/")
+            or decoded.startswith("\\")
+            or ":" in decoded
+            or ".." in decoded.replace("\\", "/").split("/")
+        ):
+            self.send_response(403); self.end_headers(); return
+        project_root = Path(__file__).resolve().parent.parent
+        data_root = (project_root / "data").resolve()
+        allowed_root = (data_root / subdir).resolve()
+        abs_path = (data_root / decoded).resolve()
+        # Defense in depth: even after normalization, confirm the resolved
+        # path is inside data/<subdir>/.
+        try:
+            abs_path.relative_to(allowed_root)
+        except ValueError:
+            self.send_response(403); self.end_headers(); return
+        if allowed_exts is not None and abs_path.suffix.lower() not in allowed_exts:
+            self.send_response(403); self.end_headers(); return
+        if not abs_path.exists() or not abs_path.is_file():
+            self.send_response(404); self.end_headers(); return
+        ct, _ = mimetypes.guess_type(str(abs_path))
+        data = abs_path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", ct or "application/octet-stream")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "public, max-age=3600")
+        self.end_headers()
+        self.wfile.write(data)
+
     def do_GET(self):
         if self.path == "/":
             self.send_response(200)
@@ -177,51 +225,19 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 self.wfile.write(f"File not found: {e}".encode())
                 return
 
-        # ── /data/generated/ static route ─────────────────────────────
-        # Serves images produced by the `generate_image` tool so the chat
-        # UI can render them inline via markdown <img>. Scoped strictly to
-        # data/generated/ — NEVER serves data/sessions/ (user prompts) or
-        # other sensitive subtrees. Path traversal is rejected.
+        # ── /data/<subtree>/ static routes (path-traversal guarded) ───
+        # generated/ → images from the `generate_image` tool so the chat UI
+        #   can render them inline via markdown <img> (any file type).
+        # research/  → Deep-Research reports (self-contained HTML + their .md
+        #   siblings only) so the Research tab can open them.
+        # Every OTHER /data/* subtree (sessions, uploads, skills, …) is
+        # explicitly NEVER served.
         if self.path.startswith("/data/generated/"):
-            rel = self.path[len("/data/"):]  # e.g. "generated/sd-X.png"
-            # Strip query string before resolving on disk.
-            if "?" in rel:
-                rel = rel.split("?", 1)[0]
-            try:
-                decoded = urllib.parse.unquote(rel)
-            except Exception:
-                self.send_response(400); self.end_headers(); return
-            # Reject absolute paths, drive letters, traversal segments.
-            if (
-                decoded.startswith("/")
-                or decoded.startswith("\\")
-                or ":" in decoded
-                or ".." in decoded.replace("\\", "/").split("/")
-            ):
-                self.send_response(403); self.end_headers(); return
-            project_root = Path(__file__).resolve().parent.parent
-            data_root = (project_root / "data").resolve()
-            allowed_root = (data_root / "generated").resolve()
-            abs_path = (data_root / decoded).resolve()
-            # Defense in depth: even after normalization, confirm the
-            # resolved path is inside data/generated/.
-            try:
-                abs_path.relative_to(allowed_root)
-            except ValueError:
-                self.send_response(403); self.end_headers(); return
-            if not abs_path.exists() or not abs_path.is_file():
-                self.send_response(404); self.end_headers(); return
-            ct, _ = mimetypes.guess_type(str(abs_path))
-            data = abs_path.read_bytes()
-            self.send_response(200)
-            self.send_header("Content-Type", ct or "application/octet-stream")
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "public, max-age=3600")
-            self.end_headers()
-            self.wfile.write(data)
+            self._serve_data_file("generated")
             return
-
-        # Any other /data/* subtree is explicitly NOT served.
+        if self.path.startswith("/data/research/"):
+            self._serve_data_file("research", allowed_exts={".html", ".htm", ".md", ".txt"})
+            return
         if self.path.startswith("/data/"):
             self.send_response(404); self.end_headers(); return
 
@@ -390,6 +406,81 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 "events": events,
                 "subsystems": SUBSYSTEMS,
             }).encode())
+            return
+
+        if self.path.startswith("/api/compare/history"):
+            # Recent blind comparisons (revealed — they're already voted/past).
+            from urllib.parse import urlparse, parse_qs
+            from core.compare import get_compare_store
+            qs = parse_qs(urlparse(self.path).query)
+            limit = 50
+            try:
+                if qs.get("limit"):
+                    limit = max(1, min(200, int(qs["limit"][0])))
+            except (TypeError, ValueError):
+                limit = 50
+            items = [c.summary_dict() for c in get_compare_store().list(limit=limit)]
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({"comparisons": items}).encode())
+            return
+
+        if self.path == "/api/skills" or self.path.startswith("/api/skills?"):
+            # List learned skills (SkillStore) for the Skills tab — most-used
+            # first, then alphabetical. Read-only; delete is a separate POST.
+            from core.skills import get_skills_store
+            try:
+                skills = sorted(
+                    (s.to_dict() for s in get_skills_store().load_all()),
+                    key=lambda d: (-int(d.get("uses") or 0), str(d.get("name") or "")),
+                )
+            except Exception as e:  # noqa: BLE001
+                log.warning(f"skills list failed: {e}")
+                skills = []
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({"skills": skills}).encode())
+            return
+
+        if self.path == "/api/research" or self.path.startswith("/api/research?"):
+            # List saved Deep-Research reports for the Research tab. Each entry
+            # links to the self-contained HTML (served via /data/research/).
+            import html as _html
+            import re as _re
+            from core.deep_research import RESEARCH_DIR
+            reports = []
+            try:
+                root = Path(RESEARCH_DIR)
+                paths = sorted(root.glob("*.html"),
+                               key=lambda p: p.stat().st_mtime, reverse=True)
+                for p in paths[:100]:
+                    try:
+                        head = p.read_text(encoding="utf-8", errors="replace")[:2000]
+                    except OSError:
+                        head = ""
+                    m = _re.search(r"<title>(.*?)</title>", head, _re.IGNORECASE | _re.DOTALL)
+                    title = (_html.unescape(m.group(1)).strip() if m else "") or p.stem
+                    st = p.stat()
+                    md = p.with_suffix(".md")
+                    reports.append({
+                        "file": p.name,
+                        "url": f"/data/research/{p.name}",
+                        "title": title,
+                        "ts": st.st_mtime,
+                        "size": st.st_size,
+                        "md_url": (f"/data/research/{md.name}" if md.exists() else None),
+                    })
+            except Exception as e:  # noqa: BLE001
+                log.warning(f"research list failed: {e}")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({"reports": reports}).encode())
             return
 
         if self.path == "/api/tags":
@@ -663,6 +754,81 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({"status": "shutting_down"}).encode())
             threading.Thread(target=_shutdown_all, daemon=True).start()
+            return
+
+        if path == "/api/compare/run":
+            # Blind side-by-side: run one prompt against N models and return the
+            # answers in a shuffled (model-anonymised) order. Identities stay
+            # hidden until the user votes (/api/compare/vote).
+            try:
+                from core.compare import run_comparison
+                prompt = (payload.get("prompt") or "").strip()
+                models = payload.get("models") or []
+                if not isinstance(models, list):
+                    models = []
+                comp = run_comparison(prompt, models)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps(comp.public_dict(reveal=False)).encode())
+            except ValueError as e:
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode())
+            except Exception as e:  # noqa: BLE001
+                log.error(f"compare run failed: {e}")
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode())
+            return
+
+        if path == "/api/compare/vote":
+            # Map the chosen blind slot back to its real model, record the
+            # winner, and return the fully-revealed comparison.
+            try:
+                from core.compare import get_compare_store
+                cid = (payload.get("id") or "").strip()
+                slot = int(payload.get("slot"))
+                comp = get_compare_store().set_winner(cid, slot)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps(comp.public_dict(reveal=True)).encode())
+            except KeyError as e:
+                self.send_response(404)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode())
+            except (ValueError, TypeError) as e:
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode())
+            return
+
+        if path == "/api/skills/delete":
+            # Remove a learned skill by slug (Skills tab delete button).
+            from core.skills import get_skills_store
+            name = (payload.get("name") or "").strip()
+            ok = False
+            if name:
+                try:
+                    ok = get_skills_store().delete(name)
+                except Exception as e:  # noqa: BLE001
+                    log.warning(f"skill delete failed: {e}")
+            self.send_response(200 if ok else 404)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": ok}).encode())
             return
 
         model = payload.get("model", "")

@@ -20,6 +20,20 @@ Pick by what the task needs, not by what sounds cool. The router (`auto-agent`) 
 | `research-agent`  | `CHAT_MODEL` (researcher) | Orchestrator (`researcher`) + `deep_research` | Multi-round web research synthesized into a cited **visual HTML report** (`data/research/`). | Quick single-source lookups (use `auto-agent`) |
 | `vision-agent`    | `CHAT_MODEL` + vision tool | Orchestrator (`vision-specialist`) | Reading screenshots / diagrams / UI mockups / error dialogs. Routes through `describe_image` (default `llava:latest`). | Pure text Q&A — use `auto-agent` |
 
+> **Non-model feature endpoints** (not virtual models — they don't appear in the
+> model dropdown):
+> - **Compare** (v6) — UI tab + `POST /api/compare/run`, `POST /api/compare/vote`,
+>   `GET /api/compare/history`. Runs one prompt across 2–4 *raw* local models
+>   concurrently, shows them blind, then reveals the winner on vote. Bypasses the
+>   orchestrator/agent loop and calls `core.providers.LocalProvider` directly.
+>   See [core/compare.py](core/compare.py).
+> - **Skills** (v6 UI) — **Skills** tab + `GET /api/skills`, `POST /api/skills/delete`.
+>   Browses/deletes the learned-procedure store (`core/skills.py`); the same
+>   skills are auto-retrieved into the agent prompt at T1.
+> - **Research** (v6 UI) — **Research** tab + `GET /api/research`; reports are
+>   served from `data/research/` via a path-traversal-guarded `/data/research/`
+>   route (`.html`/`.md` only). Produced by the `research-agent` virtual model.
+
 ---
 
 ## When to use which

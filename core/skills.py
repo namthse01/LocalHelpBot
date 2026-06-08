@@ -33,6 +33,7 @@ import logging
 import re
 import threading
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -60,8 +61,22 @@ _STOPWORDS = {
 }
 
 
+def _ascii_fold(text: str) -> str:
+    """Transliterate accented Unicode to readable ASCII (keep the letters).
+
+    NFKD splits a letter like ``ạ`` into base ``a`` + a combining mark, which we
+    then drop — so ``Cách tạo tệp`` folds to ``Cach tao tep`` instead of losing
+    every accented char. ``đ``/``Đ`` (Vietnamese) and similar stroked letters do
+    NOT decompose under NFKD, so they're special-cased first.
+    """
+    text = text.replace("đ", "d").replace("Đ", "D")
+    nfkd = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in nfkd if not unicodedata.combining(c))
+
+
 def slugify(text: str, fallback: str = "skill") -> str:
-    s = _SLUG_RE.sub("-", str(text or "").strip().lower()).strip("-")
+    folded = _ascii_fold(str(text or "")).strip().lower()
+    s = _SLUG_RE.sub("-", folded).strip("-")
     return (s or fallback)[:60]
 
 

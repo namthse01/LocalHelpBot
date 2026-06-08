@@ -4,6 +4,28 @@
 > (Project formerly known as **LocalHelpBot** — see [docs/ai/vision/lego-architecture.md](docs/ai/vision/lego-architecture.md) for the north star.)
 
 
+> **v6 (2026-06) — blind model arena.**
+> - **Compare (blind side-by-side)** — run one prompt across 2–4 local models
+>   at once (each in its own thread, so ~1× latency not N×), read the answers
+>   **blind** (Model A/B/C…), then vote to **reveal** which model won. Adapted
+>   from odysseus `compare_routes.py`, re-built single-user + synchronous +
+>   JSONL (no auth/SSE/owner-scoping). New **Compare** tab in the UI plus
+>   `/api/compare/run` · `/vote` · `/history`; comparisons persist to
+>   `data/compare/comparisons.jsonl`. Tunables `COMPARE_MAX_MODELS` (4),
+>   `COMPARE_TIMEOUT_S` (120s). See [core/compare.py](core/compare.py).
+> - **Skills tab** — the learned-procedure store (v5) is now visible in the UI:
+>   browse skills (when-to-use + steps + pitfalls + tags + usage) and delete
+>   stale ones. Backed by `GET /api/skills` · `POST /api/skills/delete`.
+> - **Research viewer** — the `research-agent`'s cited HTML reports
+>   (`data/research/`) are now listed in a **Research** tab and open in place,
+>   served via a path-traversal-guarded `/data/research/` route (`.html`/`.md`
+>   only) + `GET /api/research`.
+> - **Polish** — `core/skills.py:slugify()` now transliterates Unicode →
+>   readable ASCII (NFKD fold + `đ/Đ` special-case), so Vietnamese titles get
+>   clean slugs (`Cách tạo tệp` → `cach-tao-tep`) instead of mangled ones.
+> - **Tests** — now **251** pytest tests (+15 Compare; +1 Vietnamese slugify;
+>   +9 Skills/Research routes: list, delete, report listing, guarded serving).
+>
 > **v5 (2026-06) — odysseus-grade depth + real speculative decoding.**
 > Ports the highest-value subsystems from
 > [odysseus](https://github.com/pewdiepie-archdaemon/odysseus) into TheAgent0's
@@ -314,7 +336,8 @@ TheAgent0/
 │   │                          #   └ split: agent_parsing / agent_compaction / agent_fastpath / agent_results
 │   ├── orchestrator.py        # multi-agent router (AgentOrchestrator)
 │   │                          #   └ split: orchestrator_capture (per-turn lesson/preference/model-pull)
-│   └── agent_prompts.py       # verbatim system-prompt strings used by config.AGENT_PROFILES
+│   ├── agent_prompts.py       # verbatim system-prompt strings used by config.AGENT_PROFILES
+│   └── compare.py             # blind side-by-side model eval (run/vote/history; JSONL store)
 ├── data/                      # RAG pipeline (chunk, embed, store)
 ├── scripts/                   # update_rag.py, process_data.py
 ├── TheAgent0UI/               # Web UI

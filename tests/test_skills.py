@@ -35,6 +35,16 @@ def test_slugify():
     assert sk.slugify("") == "skill"
 
 
+def test_slugify_transliterates_vietnamese():
+    # Diacritics fold to readable ASCII instead of being dropped char-by-char.
+    assert sk.slugify("Cách tạo tệp mới") == "cach-tao-tep-moi"
+    assert sk.slugify("Đặt lại mật khẩu") == "dat-lai-mat-khau"
+    # A title that is *only* non-ASCII still produces a usable slug, never "".
+    assert sk.slugify("Tải lên") == "tai-len"
+    # Pure non-foldable script degrades to the fallback (not garbage).
+    assert sk.slugify("日本語") == "skill"
+
+
 # ── Store persistence ─────────────────────────────────────────────────
 
 def test_add_get_delete(store):

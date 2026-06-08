@@ -59,6 +59,18 @@ def _gh_headers() -> Dict[str, str]:
 
 
 def _http_get(url: str, *, headers: Optional[Dict[str, str]] = None, timeout: int = _DEFAULT_TIMEOUT) -> tuple[int, bytes, str]:
+    # SSRF guard for all outbound GETs (download_file, github, pypi, wiki,
+    # learn_from_url, deep-research). Trusted public hosts pass; file:// and
+    # the cloud-metadata range are rejected. See core/security.py.
+    try:
+        from core.security import check_outbound_url
+        ok, reason = check_outbound_url(url)
+        if not ok:
+            raise ValueError(f"Blocked unsafe URL: {reason}")
+    except ValueError:
+        raise
+    except Exception:
+        pass
     req = urllib.request.Request(url, headers=headers or _HEADERS_HTML)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.status, r.read(), r.headers.get("Content-Type", "")

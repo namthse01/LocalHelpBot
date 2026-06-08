@@ -4,6 +4,42 @@
 > (Project formerly known as **LocalHelpBot** — see [docs/ai/vision/lego-architecture.md](docs/ai/vision/lego-architecture.md) for the north star.)
 
 
+> **v5 (2026-06) — odysseus-grade depth + real speculative decoding.**
+> Ports the highest-value subsystems from
+> [odysseus](https://github.com/pewdiepie-archdaemon/odysseus) into TheAgent0's
+> architecture, keeping our virtual-model proxy, typed `ToolResult` envelopes,
+> and Stop-the-Line guard intact:
+> - **Self-evolving Skills** — beyond one-line lessons, the agent now distills
+>   reusable *procedures* into `data/skills/<slug>/SKILL.md` (when-to-use +
+>   steps + pitfalls + verification). Matching skills are keyword-retrieved and
+>   auto-injected into T1 of the prompt. Tools: `save_skill`, `list_skills`,
+>   `delete_skill`. Auto-extraction after complex runs is opt-in
+>   (`SKILLS_AUTO_EXTRACT`, default OFF). See [core/skills.py](core/skills.py).
+> - **Deep Research** — a multi-round plan→search→read→synthesize loop that
+>   gathers and cites several web sources, then writes a self-contained **visual
+>   HTML report** to `data/research/`. Use the `deep_research` tool or the new
+>   **`research-agent`** virtual model. See [core/deep_research.py](core/deep_research.py).
+> - **Tool & prompt security** — SSRF guard on every outbound fetch
+>   (`file://`, cloud-metadata `169.254.x` blocked; loopback allowed for local
+>   serving), a prompt-injection policy that treats all external/tool content as
+>   *data not instructions*, and **guide-only enforcement** — when you say
+>   "don't use any tools" the loop *hard-blocks* tool calls instead of trusting
+>   prompt compliance. See [core/security.py](core/security.py).
+> - **Adaptive context budget** — compaction threshold is derived from the
+>   model's real context window (probed via Ollama `/api/show`) instead of a
+>   fixed 6000, so long-context models stop getting throttled.
+>   See [core/context_budget.py](core/context_budget.py).
+> - **Real DFlash / vLLM backend** — a new `vllm` provider type talks to a local
+>   vLLM server running [DFlash](https://arxiv.org/abs/2602.06036) block-diffusion
+>   speculative decoding (2-4× faster generation). Launch it with
+>   [scripts/serve_vllm_dflash.py](scripts/serve_vllm_dflash.py); point a
+>   provider slot at it. NVIDIA/AMD GPU on Linux/WSL2 required — see
+>   "vLLM + DFlash" below. On Windows/macOS keep using Ollama.
+> - **Tests** — 226 pytest tests (was 66 in v4 docs): adds security, skills,
+>   context-budget, deep-research, vLLM/DFlash, and guide-only enforcement.
+>
+> Total tool count: **51** (was 46 in v4).
+
 > **v4 (2026-05) — ChatGPT-grade UX, deep tools, self-learning.**
 > Building on the v3 reliability core:
 > - **Modern chat UI** — markdown + syntax highlighting (marked + highlight.js),
@@ -180,6 +216,36 @@ Safety note: `safety_checker=None` is set in the plugin because this is
 a single-user local install. The built-in NSFW filter would otherwise
 blur output for adult creative work you've opted into.
 
+### vLLM + DFlash (real speculative decoding, v5)
+
+[DFlash](https://arxiv.org/abs/2602.06036) is a block-diffusion *draft model*
+for speculative decoding: a tiny draft proposes 15-16 tokens that the target
+model verifies in parallel, giving **2-4× faster generation with identical
+output**. It plugs into **vLLM** (not Ollama), so this path needs an
+**NVIDIA/AMD GPU on Linux/WSL2**. On Windows/macOS, keep using Ollama.
+
+1. Install vLLM (≥ 0.20.1) in its own venv: `uv pip install -e ".[vllm]"`.
+2. Launch a DFlash-accelerated server (the helper picks the matching
+   `z-lab/*-DFlash` draft for your model):
+
+   ```bash
+   python scripts/serve_vllm_dflash.py --model Qwen/Qwen3.5-27B
+   # dry-run the command:   --print     # list supported models:  --list
+   ```
+
+3. Point TheAgent0 at it — set a provider slot in `runtime_overrides.json`
+   (via the UI **Change Mode** tab) or `config.py:MODEL_PROVIDERS`:
+
+   ```python
+   "primary": {"type": "vllm", "model": "Qwen/Qwen3.5-27B",
+               "base_url": "http://localhost:8000/v1"}
+   ```
+
+The `base_url` defaults to `config.VLLM_BASE` (`http://localhost:8000/v1`).
+vLLM speaks the OpenAI API, so DFlash is transparent to TheAgent0 — you just
+get faster turns. **Note:** DFlash is a *serving-layer* technique; it cannot be
+applied to hosted models (Claude/GPT/Gemini), only to models you serve yourself.
+
 ### Switching chat model
 
 The default is `huihui_ai/qwen2.5-abliterate:14b`. To swap, edit
@@ -240,8 +306,15 @@ Tài liệu đầy đủ tổ chức theo ai-devkit phases trong [docs/ai/](docs
 
 ```
 TheAgent0/
-├── config.py                  # Config duy nhất
+├── config.py                  # Config duy nhất (system-prompt text → core/agent_prompts.py)
 ├── core/                      # proxy, orchestrator, agent, providers, tools, plugins/
+│   ├── proxy.py               # Ollama-compat HTTP proxy + virtual-model dispatch (ProxyHandler)
+│   │                          #   └ split: proxy_virtual / proxy_forward / proxy_prep / proxy_discord / proxy_runtime
+│   ├── agent.py               # tool-calling agent loop
+│   │                          #   └ split: agent_parsing / agent_compaction / agent_fastpath / agent_results
+│   ├── orchestrator.py        # multi-agent router (AgentOrchestrator)
+│   │                          #   └ split: orchestrator_capture (per-turn lesson/preference/model-pull)
+│   └── agent_prompts.py       # verbatim system-prompt strings used by config.AGENT_PROFILES
 ├── data/                      # RAG pipeline (chunk, embed, store)
 ├── scripts/                   # update_rag.py, process_data.py
 ├── TheAgent0UI/               # Web UI
@@ -249,5 +322,10 @@ TheAgent0/
 ├── build_exe.py               # One-file packaging
 └── start_theagent0.bat        # Launcher
 ```
+
+> The `proxy_*`, `agent_*`, `orchestrator_capture`, and `agent_prompts` modules are
+> behavior-preserving extractions — each symbol is re-exported from its original
+> module, so `import core.proxy`, `core.agent`, `core.orchestrator`, and `config`
+> are unchanged.
 
 Xem đầy đủ trong [docs/ai/implementation/README.md](docs/ai/implementation/README.md#code-structure).

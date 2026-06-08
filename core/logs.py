@@ -32,6 +32,7 @@ import collections
 import json
 import logging
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -210,6 +211,16 @@ def configure(
 
         if _CONFIGURED and not force:
             return
+
+        # Force UTF-8 on the console streams. The default Windows console is
+        # cp1252, so logging any non-Latin text (Vietnamese, emoji) makes the
+        # rich/stream handler raise UnicodeEncodeError on every line. errors=
+        # "replace" keeps logging non-fatal even on exotic glyphs.
+        for _stream in (sys.stdout, sys.stderr):
+            try:
+                _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+            except Exception:
+                pass
 
         DEFAULT_JSONL_PATH = jsonl_path or (Path(__file__).parent.parent / "proxy.log.jsonl")
 

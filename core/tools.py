@@ -251,6 +251,15 @@ def _strip_html(html: str, max_chars: int = 6000) -> str:
 
 
 def fetch_url(url: str) -> ToolResult:
+    # SSRF guard — reject non-http(s) schemes + cloud-metadata range before
+    # the outbound request is even built. See core/security.py.
+    try:
+        from core.security import guard_url_or_result
+        bad = guard_url_or_result(url)
+        if bad is not None:
+            return bad
+    except Exception:
+        pass
     try:
         req = urllib.request.Request(url, headers=_HEADERS)
         with urllib.request.urlopen(req, timeout=15) as resp:

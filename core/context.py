@@ -271,6 +271,7 @@ def assemble_context(
     cwd: Optional[str] = None,
     tier_budgets: Optional[Dict[str, int]] = None,
     profile_name: Optional[str] = None,
+    last_user_message: Optional[str] = None,
 ) -> AssembledContext:
     """Build the system prompt + cleaned history for one model call.
 
@@ -307,6 +308,21 @@ def assemble_context(
     budgets = {**DEFAULT_TIER_BUDGETS, **(tier_budgets or {})}
     pruned: List[str] = []
 
+    # Latest user message drives skill retrieval (T1) + guide-only detection.
+    # Caller may pass it explicitly; otherwise sniff it from history.
+    if last_user_message is None:
+        last_user_message = ""
+        for _m in reversed(history or []):
+            if _m.get("role") == "user":
+                _c = _m.get("content", "")
+                if isinstance(_c, list):
+                    _c = " ".join(
+                        p.get("text", "") for p in _c
+                        if isinstance(p, dict) and p.get("type") == "text"
+                    )
+                last_user_message = str(_c or "")
+                break
+
     # ── Session lookup (T2) ──────────────────────────────────────────
     store = get_store()
     session = store.get(session_id)
@@ -328,6 +344,33 @@ def assemble_context(
     except Exception:
         # Lessons are best-effort; never block context assembly.
         pass
+    # v5: inject learned skills relevant to this turn (keyword retrieval
+    # against the user's latest message). Best-effort — skipped on any error.
+    try:
+        from core.skills import get_skills_store
+        skills_block = get_skills_store().render_for_prompt(query=last_user_message or "")
+        if skills_block:
+            t1_parts.append(skills_block)
+    except Exception:
+        pass
+    # v5: prompt-injection policy — external/tool content is data, not
+    # instructions. Sits in T1 (never pruned) so it always wins over any
+    # injected "ignore previous instructions" inside retrieved content.
+    try:
+        from core.security import UNTRUSTED_CONTEXT_POLICY
+        t1_parts.append(UNTRUSTED_CONTEXT_POLICY)
+    except Exception:
+        pass
+    # v5: when the user's turn explicitly forbids tools, surface the
+    # guide-only directive in T1. The agent loop also hard-blocks tool
+    # calls (defense in depth) — this just tells the model up front.
+    if last_user_message:
+        try:
+            from core.security import GUIDE_ONLY_DIRECTIVE, detect_guide_only_turn
+            if detect_guide_only_turn(last_user_message):
+                t1_parts.append(GUIDE_ONLY_DIRECTIVE)
+        except Exception:
+            pass
     t1 = "\n\n".join(t1_parts)
 
     # ── T2: Session ──────────────────────────────────────────────────

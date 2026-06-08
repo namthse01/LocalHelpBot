@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ollama là gì và dùng để làm gì?</title>
+<style>
+:root { color-scheme: light dark; }
+body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 860px;
+  margin: 0 auto; padding: 2.5rem 1.25rem; line-height: 1.65;
+  background:#0f1115; color:#e6e6e6; }
+h1,h2,h3 { line-height:1.25; }
+h1 { border-bottom:2px solid #2a2f3a; padding-bottom:.4rem; }
+h2 { margin-top:2rem; color:#7aa2f7; }
+a { color:#7dcfff; word-break:break-all; }
+sup { color:#bb9af7; }
+.meta { color:#9aa5b1; font-size:.85rem; margin-bottom:2rem; }
+ul { padding-left:1.3rem; }
+code,pre { background:#1a1d25; border-radius:6px; padding:.1rem .35rem; }
+.badge { display:inline-block; background:#1f2430; border:1px solid #2a2f3a;
+  border-radius:999px; padding:.15rem .7rem; font-size:.8rem; margin-right:.4rem; }
+@media (prefers-color-scheme: light) { body{background:#fff;color:#1a1a1a;}
+  h2{color:#3056d3;} a{color:#1a56db;} .meta{color:#555;} code,pre{background:#f3f4f6;} }
+</style></head>
+<body>
+<h1>Ollama là gì và dùng để làm gì?</h1>
+<div class="meta">
+  <span class="badge">Deep Research</span>
+  <span class="badge">1 round(s)</span>
+  <span class="badge">2 source(s)</span>
+  <span class="badge">2026-06-07 21:59</span>
+</div>
+<h1>Ollama là gì và dùng để làm gì?</h1>
+<p><strong>Ollama</strong> là một nền tảng mã nguồn mở (MIT license) cho phép chạy các mô hình ngôn ngữ lớn (LLMs) trực tiếp trên máy tính cá nhân, không cần kết nối internet và đảm bảo bảo mật dữ liệu tuyệt đối <sup>[1]</sup>. Ollama đã phát triển từ một giao diện dòng lệnh đơn giản thành hệ sinh thái hoàn chỉnh, bao gồm khả năng chạy mô hình AI cục bộ, tích hợp API cho nhà phát triển, triển khai RAG (Retrieval-Augmented Generation) cho doanh nghiệp và cả cloud models cho tác vụ nặng <sup>[2]</sup>.</p>
+<h2>Điểm nổi bật của Ollama:</h2>
+<ul>
+<li><strong>Dễ dàng cài đặt:</strong> Hỗ trợ macOS, Windows và Linux.</li>
+<li><strong>Hơn 100 mô hình AI:</strong> Bao gồm Llama 3.3, Gemma 4, DeepSeek-R1, Qwen 3, từ máy tính có 8GB RAM đến workstation GPU chuyên dụng <sup>[2]</sup>.</li>
+<li><strong>Tương thích OpenAI API:</strong> Nhà phát triển chỉ cần thay đổi hai dòng code để chuyển từ ChatGPT sang Ollama.</li>
+<li><strong>API tương thích OpenAI:</strong> Dễ dàng tích hợp với Python, JavaScript, và cURL.</li>
+</ul>
+<h2>Cách sử dụng</h2>
+<h3>1. Cài đặt Ollama:</h3>
+<ul>
+<li>Truy cập trang web của Ollama để tải phiên bản phù hợp với hệ điều hành của bạn.</li>
+<li>Kiểm tra cài đặt bằng lệnh `ollama --version`.</li>
+</ul>
+<h3>2. Chạy mô hình đầu tiên:</h3>
+<ul>
+<li>Xem danh sách các mô hình tại ollama.com/models.</li>
+<li>Chạy mô hình bằng CLI, API cURL hoặc Python.</li>
+</ul>
+<h4>Ví dụ về cách chạy mô hình Gemma 3:</h4>
+<p><strong>Cách 1:</strong> Sử dụng CLI:</p>
+<p>```sh</p>
+<p>ollama run gemma3</p>
+<p>```</p>
+<p><strong>Cách 2:</strong> Sử dụng API cURL:</p>
+<p>```sh</p>
+<p>curl <a href="http://localhost:11434/api/chat" target="_blank" rel="noopener">http://localhost:11434/api/chat</a> -d &#x27;{</p>
+<p>    &quot;model&quot;: &quot;gemma3&quot;,</p>
+<p>    &quot;messages&quot;: [{&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;Hello there!&quot;}],</p>
+<p>    &quot;stream&quot;: false</p>
+<p>}&#x27;</p>
+<p>```</p>
+<p><strong>Cách 3:</strong> Sử dụng Python:</p>
+<p>```python</p>
+<p>from ollama import chat</p>
+<p>response = chat(model=&#x27;gemma3&#x27;, messages=[</p>
+<p>    {&#x27;role&#x27;: &#x27;user&#x27;, &#x27;content&#x27;: &#x27;Why is the sky blue?&#x27;}</p>
+<p>])</p>
+<p>print(response.message.content)</p>
+<p>```</p>
+<h2>Tầm quan trọng của Ollama</h2>
+<p>Ollama cung cấp một giải pháp toàn diện cho việc chạy và tích hợp mô hình ngôn ngữ lớn, giúp người dùng tận dụng sức mạnh của AI ngay trên máy tính cá nhân. Điều này không chỉ mang lại sự linh hoạt trong việc sử dụng các mô hình AI mà còn đảm bảo bảo mật dữ liệu tuyệt đối <sup>[1]</sup>.</p>
+<h2>Ứng dụng</h2>
+<ul>
+<li><strong>Nhà phát triển:</strong> Dễ dàng tích hợp mô hình AI vào ứng dụng của mình thông qua API tương thích OpenAI.</li>
+<li><strong>Doanh nghiệp:</strong> Triển khai RAG (Retrieval-Augmented Generation) cho các tác vụ phức tạp, đảm bảo hiệu suất và độ chính xác cao <sup>[2]</sup>.</li>
+<li><strong>Người dùng cá nhân:</strong> Sử dụng mô hình AI cục bộ để thực hiện các tác vụ hàng ngày như soạn thảo văn bản, trả lời câu hỏi, và nhiều hơn nữa.</li>
+</ul>
+<h2>Kết luận</h2>
+<p>Ollama là một công cụ mạnh mẽ cho việc chạy và tích hợp mô hình ngôn ngữ lớn trên máy tính cá nhân. Với khả năng cài đặt dễ dàng, hỗ trợ đa nền tảng, và API tương thích OpenAI, Ollama mang lại trải nghiệm sử dụng AI linh hoạt và hiệu quả <sup>[1]</sup><sup>[2]</sup>.</p>
+<h2>Sources</h2>
+<p><sup>[1]</sup> <a href="https://leos.vn/ollama-la-gi-huong-dan-chay-ai-local-mien-phi/" target="_blank" rel="noopener">https://leos.vn/ollama-la-gi-huong-dan-chay-ai-local-mien-phi/</a></p>
+<p><sup>[2]</sup> <a href="https://fit.neu.edu.vn/post/ollama-giai-phap-toan-dien-cho-chay-va-tich-hop-mo-hinh-ngon-ngu-lon-ll-ms" target="_blank" rel="noopener">https://fit.neu.edu.vn/post/ollama-giai-phap-toan-dien-cho-chay-va-tich-hop-mo-hinh-ngon-ngu-lon-ll-ms</a></p>
+</body></html>

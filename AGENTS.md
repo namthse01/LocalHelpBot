@@ -17,6 +17,7 @@ Pick by what the task needs, not by what sounds cool. The router (`auto-agent`) 
 | `web-creep`       | `CHAT_MODEL`          | Agent loop + WEB_TOOLS       | Multi-source web research without filesystem access.                     | Anything that needs to write files |
 | `browser-agent`   | `CHAT_MODEL`          | Agent loop + BROWSER_TOOLS   | Reading local Chrome/Edge cookies, history, storage.                     | General chat                       |
 | `deep-agent`      | `LARGE_MODEL`         | Forward (no tools)           | Heavy reasoning when you have a bigger model installed.                  | Anything tool-driven (no agent loop) |
+| `research-agent`  | `CHAT_MODEL` (researcher) | Orchestrator (`researcher`) + `deep_research` | Multi-round web research synthesized into a cited **visual HTML report** (`data/research/`). | Quick single-source lookups (use `auto-agent`) |
 | `vision-agent`    | `CHAT_MODEL` + vision tool | Orchestrator (`vision-specialist`) | Reading screenshots / diagrams / UI mockups / error dialogs. Routes through `describe_image` (default `llava:latest`). | Pure text Q&A — use `auto-agent` |
 
 ---
@@ -54,6 +55,14 @@ Reads local Chrome/Edge cookies and storage via `BROWSER_TOOLS` (defined in `cor
 
 ### `deep-agent`
 Forwards directly to `LARGE_MODEL` (e.g. `glm-4.7-flash:latest`) — no agent loop, no tools. Use when you want raw reasoning power on a question and don't need tool execution. If `LARGE_MODEL` is empty in `config.py`, this model falls back to `CHAT_MODEL`.
+
+### `research-agent` *(v5)*
+Routes through the `researcher` specialist, which has the `deep_research` tool. The agent plans sub-questions, runs several rounds of web search + page reads, synthesizes an evolving cited report, and writes a self-contained **visual HTML report** to `data/research/<timestamp>-<slug>.html`. Every fetched page is SSRF-guarded and fenced as untrusted source data (prompt-injection hardening). Slow by design (multiple rounds) — use for comparisons, surveys, "state of X in 2026", due diligence.
+
+**Example prompt:**
+> *"Research the current best local LLM serving stacks for a 24GB GPU and recommend one with citations."*
+
+**Gotcha:** needs working web access (DuckDuckGo via `search_web`). Returns `NO_RESULTS` if no usable sources were found — it won't hallucinate a report.
 
 ### `vision-agent` *(v4)*
 Routes through the `vision-specialist` profile. The text model (default `qwen3.5`) drives the loop, and the vision-specific work happens via two tools (`describe_image`, `screenshot_and_describe`) that call Ollama's `llava` (or whatever you set as `VISION_MODEL`).

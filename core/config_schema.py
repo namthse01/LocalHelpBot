@@ -53,13 +53,19 @@ class AgentProfile(BaseModel):
 
 
 class ModelProviderSlot(BaseModel):
-    """A primary or fallback model provider entry."""
+    """A primary or fallback model provider entry.
+
+    `type="vllm"` is the real-dflash path: an OpenAI-compatible local vLLM
+    server (optionally serving a z-lab DFlash speculative draft). `base_url`
+    points at it (default config.VLLM_BASE). See core/providers.VLLMProvider.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    type: Literal["api", "local"] = "local"
+    type: Literal["api", "local", "vllm"] = "local"
     provider: str = "ollama"
     api_key: Optional[str] = None
+    base_url: Optional[str] = None
     model: str
 
 

@@ -8,6 +8,15 @@ from config import MODEL_PROVIDERS, OLLAMA_BASE
 
 logger = logging.getLogger(__name__)
 
+
+def _vllm_base() -> str:
+    """vLLM OpenAI-compatible base URL (config.VLLM_BASE, else default)."""
+    try:
+        from config import VLLM_BASE
+        return VLLM_BASE
+    except Exception:
+        return "http://localhost:8000/v1"
+
 # Sampling presets for the local provider.
 #   DEFAULT  — balanced for mixed tool-use + general chat. Still
 #              deterministic enough that <tool_use> JSON stays valid.
@@ -85,6 +94,60 @@ class LocalProvider(BaseProvider):
             completion_tokens=comp_tok,
             tok_per_sec=tps,
         )
+
+class VLLMProvider(BaseProvider):
+    """OpenAI-compatible client for a local vLLM server — the real-dflash path.
+
+    dflash (block-diffusion speculative decoding) is configured at the vLLM
+    server's launch via `--speculative-config '{"method":"dflash", ...}'`, so
+    from the client's side a dflash-accelerated model is just an
+    OpenAI-compatible `/chat/completions` endpoint that happens to be 2-4×
+    faster. Point `config.VLLM_BASE` at it (default http://localhost:8000/v1).
+
+    Launch a dflash server with `scripts/serve_vllm_dflash.py` (or the README
+    "vLLM + dflash" section). NVIDIA/AMD GPU on Linux/WSL2 required.
+    """
+
+    def __init__(self, model: str, base_url: Optional[str] = None, api_key: str = ""):
+        self.model = model
+        self.base_url = (base_url or _vllm_base()).rstrip("/")
+        self.api_key = api_key or "EMPTY"  # vLLM ignores the key unless --api-key set
+        self.provider_type = "vllm"
+
+    def chat(self, messages: List[Dict[str, str]], options: Optional[Dict] = None) -> ModelResponse:
+        opts = options or SAMPLING_DEFAULT
+        body = json.dumps({
+            "model": self.model,
+            "messages": messages,
+            "temperature": opts.get("temperature", 0.3),
+            "max_tokens": opts.get("num_predict", 2048),
+            "top_p": opts.get("top_p", 0.9),
+            "stream": False,
+        }).encode()
+        req = urllib.request.Request(
+            self.base_url + "/chat/completions",
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+            },
+            method="POST",
+        )
+        t0 = time.perf_counter()
+        with urllib.request.urlopen(req, timeout=180) as resp:
+            data = json.loads(resp.read())
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+
+        content = data["choices"][0]["message"]["content"]
+        usage = data.get("usage", {}) or {}
+        pt = usage.get("prompt_tokens", 0)
+        ct = usage.get("completion_tokens", 0)
+        tps = (ct / (latency_ms / 1000)) if latency_ms else 0.0
+        return ModelResponse(
+            content=content, provider="vllm", model=self.model,
+            latency_ms=latency_ms, prompt_tokens=pt, completion_tokens=ct, tok_per_sec=tps,
+        )
+
 
 class APIProvider(BaseProvider):
     def __init__(self, provider_type: str, api_key: str, model: str):
@@ -278,6 +341,8 @@ class SmartProvider:
     def _create_provider(self, cfg: Dict) -> BaseProvider:
         if cfg["type"] == "local":
             return LocalProvider(cfg["model"])
+        elif cfg["type"] == "vllm":
+            return VLLMProvider(cfg["model"], base_url=cfg.get("base_url"), api_key=cfg.get("api_key", ""))
         elif cfg["type"] == "api":
             return APIProvider(cfg["provider"], cfg["api_key"], cfg["model"])
         else:

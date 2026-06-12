@@ -20,10 +20,14 @@ def _vllm_base() -> str:
 # Sampling presets for the local provider.
 #   DEFAULT  — balanced for mixed tool-use + general chat. Still
 #              deterministic enough that <tool_use> JSON stays valid.
+#              `repeat_penalty` 1.1 guards against the degeneration we saw on
+#              the abliterated multilingual 14B model (looping + drifting into
+#              another language / leaking a self-addressed meta-prompt). Even
+#              at temp 0.3 that model could spiral without it.
 #   CREATIVE — warmer + longer + with repeat penalty; activated by the
 #              agent loop when the user's latest message looks like a
 #              creative-writing / story / RP request.
-SAMPLING_DEFAULT = {"temperature": 0.3, "num_predict": 2048, "top_p": 0.9}
+SAMPLING_DEFAULT = {"temperature": 0.3, "num_predict": 2048, "top_p": 0.9, "repeat_penalty": 1.1}
 SAMPLING_CREATIVE = {
     "temperature": 0.85,
     "num_predict": 4096,

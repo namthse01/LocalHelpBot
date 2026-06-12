@@ -127,6 +127,15 @@
             <button onclick="switchTab('research')" id="tab-research" class="px-4 py-1.5 rounded-lg text-sm font-medium text-slate-400 hover:text-slate-200 transition-all">
                 <i class="fas fa-flask mr-2"></i> Research
             </button>
+            <button onclick="switchTab('notes')" id="tab-notes" class="px-4 py-1.5 rounded-lg text-sm font-medium text-slate-400 hover:text-slate-200 transition-all">
+                <i class="fas fa-note-sticky mr-2"></i> Notes
+            </button>
+            <button onclick="switchTab('hardware')" id="tab-hardware" class="px-4 py-1.5 rounded-lg text-sm font-medium text-slate-400 hover:text-slate-200 transition-all">
+                <i class="fas fa-microchip mr-2"></i> Hardware
+            </button>
+            <button onclick="switchTab('documents')" id="tab-documents" class="px-4 py-1.5 rounded-lg text-sm font-medium text-slate-400 hover:text-slate-200 transition-all">
+                <i class="fas fa-file-lines mr-2"></i> Documents
+            </button>
         </div>
 
         <div class="flex items-center gap-3">
@@ -454,6 +463,157 @@
                 </div>
                 <div id="research-status" class="text-xs text-slate-500 mb-3"></div>
                 <div id="research-list" class="space-y-3"></div>
+            </div>
+        </div>
+
+        <!-- TAB 10: NOTES (Keep-style notes + checklists / to-do lists) -->
+        <div id="content-notes" class="tab-content h-full overflow-y-auto p-8 custom-scrollbar">
+            <div class="max-w-5xl mx-auto">
+                <div class="mb-6 flex items-center justify-between">
+                    <div>
+                        <h2 class="text-2xl font-bold text-slate-200">Notes</h2>
+                        <p class="text-slate-400">Quick notes &amp; checklists. The agent can read/add these via the <code class="text-indigo-300">add_note</code> tools.</p>
+                    </div>
+                    <button onclick="loadNotes()" class="text-xs text-slate-400 hover:text-slate-200 border border-slate-700 rounded-lg px-3 py-1.5"><i class="fas fa-rotate mr-1"></i> Refresh</button>
+                </div>
+
+                <!-- Create form -->
+                <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-lg mb-6">
+                    <input id="note-title" type="text" placeholder="Title"
+                        class="w-full bg-transparent text-slate-200 text-base font-medium placeholder-slate-600 focus:outline-none mb-2" />
+                    <textarea id="note-body" rows="2" placeholder="Take a note…  (in checklist mode, one item per line)"
+                        class="w-full bg-transparent text-slate-300 text-sm placeholder-slate-600 focus:outline-none resize-y"></textarea>
+                    <div class="flex flex-wrap items-center gap-2 mt-3 pt-3 border-t border-slate-800">
+                        <label class="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer select-none">
+                            <input id="note-checklist" type="checkbox" class="accent-indigo-600" /> Checklist
+                        </label>
+                        <input id="note-label" type="text" placeholder="label"
+                            class="bg-slate-800 text-slate-300 text-xs rounded-lg px-2.5 py-1.5 w-28 placeholder-slate-600 focus:outline-none" />
+                        <input id="note-due" type="text" placeholder="due (optional)"
+                            class="bg-slate-800 text-slate-300 text-xs rounded-lg px-2.5 py-1.5 w-36 placeholder-slate-600 focus:outline-none" />
+                        <label class="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer select-none">
+                            <input id="note-pinned" type="checkbox" class="accent-indigo-600" /> Pin
+                        </label>
+                        <button onclick="createNote()" class="ml-auto bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded-lg px-4 py-1.5"><i class="fas fa-plus mr-1"></i> Add</button>
+                    </div>
+                </div>
+
+                <!-- Filters -->
+                <div class="flex flex-wrap items-center gap-2 mb-4 text-xs">
+                    <span class="text-slate-500">Filter:</span>
+                    <select id="note-label-filter" onchange="loadNotes()"
+                        class="bg-slate-800 text-slate-300 rounded-lg px-2.5 py-1.5 focus:outline-none">
+                        <option value="">All labels</option>
+                    </select>
+                    <label class="flex items-center gap-1.5 text-slate-400 cursor-pointer select-none ml-2">
+                        <input id="note-show-archived" type="checkbox" onchange="loadNotes()" class="accent-indigo-600" /> Show archived
+                    </label>
+                </div>
+
+                <div id="notes-status" class="text-xs text-slate-500 mb-3"></div>
+                <div id="notes-list" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+            </div>
+        </div>
+
+        <!-- TAB 11: HARDWARE (Cookbook / hw-fit — will this model run on my box?) -->
+        <div id="content-hardware" class="tab-content h-full overflow-y-auto p-8 custom-scrollbar">
+            <div class="max-w-5xl mx-auto">
+                <div class="mb-6 flex items-center justify-between">
+                    <div>
+                        <h2 class="text-2xl font-bold text-slate-200">Hardware fit</h2>
+                        <p class="text-slate-400">Which installed models actually run here? The agent can check via <code class="text-indigo-300">hardware_info</code> / <code class="text-indigo-300">model_fit</code> / <code class="text-indigo-300">recommend_models</code>.</p>
+                    </div>
+                    <div class="flex items-center gap-2 text-xs">
+                        <label class="text-slate-500">Context</label>
+                        <select id="hwfit-ctx" onchange="loadHwfit()"
+                            class="bg-slate-800 text-slate-300 rounded-lg px-2.5 py-1.5 focus:outline-none">
+                            <option value="2048">2K</option>
+                            <option value="4096">4K</option>
+                            <option value="8192" selected>8K</option>
+                            <option value="16384">16K</option>
+                            <option value="32768">32K</option>
+                        </select>
+                        <label class="flex items-center gap-1.5 text-slate-400 cursor-pointer select-none ml-2">
+                            <input id="hwfit-fit-only" type="checkbox" onchange="loadHwfit()" class="accent-indigo-600" /> Only what fits
+                        </label>
+                        <button onclick="loadHwfit()" class="text-slate-400 hover:text-slate-200 border border-slate-700 rounded-lg px-3 py-1.5"><i class="fas fa-rotate mr-1"></i> Refresh</button>
+                    </div>
+                </div>
+
+                <!-- Hardware card -->
+                <div id="hwfit-card" class="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-lg mb-6 font-mono text-sm text-slate-300 whitespace-pre-wrap"></div>
+
+                <div id="hwfit-status" class="text-xs text-slate-500 mb-3"></div>
+                <div id="hwfit-list" class="space-y-2"></div>
+
+                <!-- Recipe panel -->
+                <div id="hwfit-recipe" class="hidden mt-6 bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-lg">
+                    <div class="flex items-center justify-between mb-3">
+                        <h3 class="text-lg font-bold text-slate-200">Serve recipe</h3>
+                        <button onclick="$id('hwfit-recipe').classList.add('hidden')" class="text-slate-400 hover:text-slate-200"><i class="fas fa-times"></i></button>
+                    </div>
+                    <pre id="hwfit-recipe-body" class="bg-slate-950 border border-slate-800 rounded-lg p-3 text-xs text-emerald-300 overflow-x-auto whitespace-pre-wrap"></pre>
+                    <div id="hwfit-recipe-notes" class="mt-3 space-y-1 text-sm text-slate-400"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB 12: DOCUMENTS (living docs with version history) -->
+        <div id="content-documents" class="tab-content h-full overflow-y-auto p-8 custom-scrollbar">
+            <div class="max-w-6xl mx-auto">
+                <div class="mb-6 flex items-center justify-between gap-4">
+                    <div>
+                        <h2 class="text-2xl font-bold text-slate-200">Documents</h2>
+                        <p class="text-slate-400">Living documents with version history. The agent reads/writes them via <code class="text-indigo-300">create_document</code> / <code class="text-indigo-300">update_document</code>.</p>
+                    </div>
+                    <div class="flex items-center gap-2 text-xs flex-shrink-0">
+                        <input id="doc-search" type="text" placeholder="Search…" oninput="loadDocuments()"
+                            class="bg-slate-800 text-slate-300 rounded-lg px-2.5 py-1.5 w-36 placeholder-slate-600 focus:outline-none" />
+                        <select id="doc-sort" onchange="loadDocuments()"
+                            class="bg-slate-800 text-slate-300 rounded-lg px-2.5 py-1.5 focus:outline-none">
+                            <option value="recent">Recent</option>
+                            <option value="oldest">Oldest</option>
+                            <option value="edits">Most edited</option>
+                            <option value="alpha">A–Z</option>
+                        </select>
+                        <label class="flex items-center gap-1.5 text-slate-400 cursor-pointer select-none">
+                            <input id="doc-show-archived" type="checkbox" onchange="loadDocuments()" class="accent-indigo-600" /> Archived
+                        </label>
+                        <button onclick="tidyDocuments()" title="Flag junk &amp; duplicate documents" class="text-slate-400 hover:text-slate-200 border border-slate-700 rounded-lg px-3 py-1.5"><i class="fas fa-broom mr-1"></i> Tidy</button>
+                        <button onclick="newDocument()" class="bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg px-3 py-1.5"><i class="fas fa-plus mr-1"></i> New</button>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 lg:grid-cols-[300px_1fr] gap-5">
+                    <!-- Library -->
+                    <div>
+                        <div id="documents-status" class="text-xs text-slate-500 mb-2"></div>
+                        <div id="documents-list" class="space-y-2"></div>
+                    </div>
+
+                    <!-- Editor -->
+                    <div id="doc-editor" class="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-lg hidden">
+                        <input id="doc-title" type="text" placeholder="Title"
+                            class="w-full bg-transparent text-slate-200 text-lg font-semibold placeholder-slate-600 focus:outline-none mb-2" />
+                        <div class="flex flex-wrap items-center gap-2 mb-3 text-xs">
+                            <span id="doc-meta" class="text-slate-500"></span>
+                            <input id="doc-language" type="text" placeholder="language"
+                                class="ml-auto bg-slate-800 text-slate-300 rounded-lg px-2.5 py-1 w-28 placeholder-slate-600 focus:outline-none" />
+                            <select id="doc-version" class="bg-slate-800 text-slate-300 rounded-lg px-2.5 py-1 focus:outline-none max-w-[12rem]"></select>
+                            <button onclick="restoreDocVersion()" title="Restore selected version" class="text-slate-400 hover:text-slate-200 border border-slate-700 rounded-lg px-2.5 py-1"><i class="fas fa-clock-rotate-left mr-1"></i> Restore</button>
+                            <button onclick="toggleDocPreview()" id="doc-preview-btn" class="text-slate-400 hover:text-slate-200 border border-slate-700 rounded-lg px-2.5 py-1"><i class="fas fa-eye mr-1"></i> Preview</button>
+                        </div>
+                        <textarea id="doc-content" rows="18" placeholder="Write markdown…"
+                            class="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-slate-200 text-sm font-mono placeholder-slate-600 focus:outline-none resize-y"></textarea>
+                        <div id="doc-preview" class="hidden markdown-body bg-slate-950 border border-slate-800 rounded-lg p-4 text-sm text-slate-200 overflow-y-auto" style="max-height: 30rem;"></div>
+                        <div class="flex items-center gap-2 mt-3 pt-3 border-t border-slate-800">
+                            <span id="doc-save-status" class="text-xs text-slate-500"></span>
+                            <button onclick="archiveDocument()" id="doc-archive-btn" class="ml-auto text-slate-400 hover:text-slate-200 border border-slate-700 rounded-lg px-3 py-1.5 text-sm"><i class="fas fa-box-archive mr-1"></i> Archive</button>
+                            <button onclick="deleteDocument()" class="text-red-400 hover:text-red-300 border border-slate-700 rounded-lg px-3 py-1.5 text-sm"><i class="fas fa-trash mr-1"></i> Delete</button>
+                            <button onclick="saveDocument()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded-lg px-4 py-1.5"><i class="fas fa-floppy-disk mr-1"></i> Save</button>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -1829,6 +1989,410 @@
             }
         }
 
+        // ── Notes tab: Keep-style notes + checklists ───────────────────
+        async function createNote() {
+            const title = ($id('note-title').value || '').trim();
+            const body = ($id('note-body').value || '').trim();
+            const isChecklist = $id('note-checklist').checked;
+            const label = ($id('note-label').value || '').trim();
+            const due = ($id('note-due').value || '').trim();
+            const pinned = $id('note-pinned').checked;
+            if (!title && !body) return;
+            const payload = { title, label, due_date: due, pinned };
+            if (isChecklist) {
+                payload.items = body.split('\n').map(s => s.trim()).filter(Boolean);
+                payload.note_type = 'checklist';
+            } else {
+                payload.content = body;
+            }
+            try {
+                const r = await fetch('/api/notes/create', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                // Reset the form.
+                $id('note-title').value = ''; $id('note-body').value = '';
+                $id('note-label').value = ''; $id('note-due').value = '';
+                $id('note-checklist').checked = false; $id('note-pinned').checked = false;
+            } catch (e) { /* refresh below reflects real state */ }
+            loadNotes();
+        }
+
+        async function _noteAction(action, payload) {
+            try {
+                await fetch('/api/notes/' + action, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+            } catch (e) { /* ignore — refresh shows real state */ }
+            loadNotes();
+        }
+        function togglePinNote(id) { _noteAction('pin', { id }); }
+        function archiveNote(id) { _noteAction('archive', { id }); }
+        function toggleNoteItem(id, index) { _noteAction('item-toggle', { id, index }); }
+        function deleteNote(id) {
+            if (!confirm('Delete this note?')) return;
+            _noteAction('delete', { id });
+        }
+
+        function _noteCard(n) {
+            const card = document.createElement('div');
+            card.className = 'bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-lg flex flex-col gap-2'
+                + (n.pinned ? ' ring-1 ring-indigo-600/40' : '')
+                + (n.archived ? ' opacity-60' : '');
+            let bodyHtml = '';
+            if (n.note_type === 'checklist') {
+                const items = (n.items || []).map((it, i) => `
+                    <li class="flex items-start gap-2 text-sm ${it.done ? 'text-slate-500 line-through' : 'text-slate-300'}">
+                        <input type="checkbox" ${it.done ? 'checked' : ''} onchange="toggleNoteItem('${escapeHtml(n.id)}', ${i})" class="mt-0.5 accent-indigo-600" />
+                        <span>${escapeHtml(it.text || '')}</span>
+                    </li>`).join('');
+                const done = (n.items || []).filter(it => it.done).length;
+                bodyHtml = `<ul class="space-y-1">${items}</ul>`
+                    + (n.items && n.items.length ? `<div class="text-[11px] text-slate-600 mt-1">${done}/${n.items.length} done</div>` : '');
+            } else if (n.content) {
+                bodyHtml = `<p class="text-sm text-slate-300 whitespace-pre-wrap">${escapeHtml(n.content)}</p>`;
+            }
+            const meta = [];
+            if (n.label) meta.push(`<span class="text-[10px] bg-slate-800 text-slate-400 rounded px-1.5 py-0.5">#${escapeHtml(n.label)}</span>`);
+            if (n.due_date) meta.push(`<span class="text-[10px] text-amber-400/80"><i class="fas fa-clock mr-1"></i>${escapeHtml(n.due_date)}</span>`);
+            card.innerHTML = `
+                <div class="flex items-start justify-between gap-2">
+                    <h3 class="text-base font-semibold text-slate-200 min-w-0 break-words">${escapeHtml(n.title || '(untitled)')}</h3>
+                    <button onclick="togglePinNote('${escapeHtml(n.id)}')" title="Pin" class="shrink-0 ${n.pinned ? 'text-indigo-400' : 'text-slate-600 hover:text-slate-300'}"><i class="fas fa-thumbtack text-xs"></i></button>
+                </div>
+                ${bodyHtml}
+                <div class="flex flex-wrap items-center gap-2 mt-1">${meta.join(' ')}</div>
+                <div class="flex items-center gap-3 mt-auto pt-2 border-t border-slate-800 text-xs text-slate-600">
+                    <button onclick="archiveNote('${escapeHtml(n.id)}')" class="hover:text-slate-300" title="${n.archived ? 'Unarchive' : 'Archive'}"><i class="fas fa-box-archive mr-1"></i>${n.archived ? 'Unarchive' : 'Archive'}</button>
+                    <button onclick="deleteNote('${escapeHtml(n.id)}')" class="hover:text-red-400 ml-auto" title="Delete"><i class="fas fa-trash"></i></button>
+                </div>`;
+            return card;
+        }
+
+        async function loadNotes() {
+            const wrap = $id('notes-list');
+            const status = $id('notes-status');
+            if (!wrap) return;
+            if (status) status.textContent = 'Loading…';
+            const label = ($id('note-label-filter') && $id('note-label-filter').value) || '';
+            const archived = $id('note-show-archived') && $id('note-show-archived').checked ? '1' : '0';
+            try {
+                const q = new URLSearchParams({ archived });
+                if (label) q.set('label', label);
+                const r = await fetch('/api/notes?' + q.toString());
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                const { notes, labels } = await r.json();
+                // Refresh the label filter options (preserve current selection).
+                const sel = $id('note-label-filter');
+                if (sel) {
+                    const cur = sel.value;
+                    sel.innerHTML = '<option value="">All labels</option>'
+                        + (labels || []).map(l => `<option value="${escapeHtml(l)}">${escapeHtml(l)}</option>`).join('');
+                    sel.value = cur;
+                }
+                if (!notes || notes.length === 0) {
+                    wrap.innerHTML = '';
+                    if (status) status.textContent = 'No notes yet. Add one above, or ask the agent to.';
+                    return;
+                }
+                if (status) status.textContent = notes.length + ' note' + (notes.length === 1 ? '' : 's');
+                wrap.innerHTML = '';
+                notes.forEach(n => wrap.appendChild(_noteCard(n)));
+            } catch (e) {
+                if (status) status.textContent = 'Error: ' + e.message;
+            }
+        }
+
+        // ── Hardware fit (Cookbook / hw-fit) ──────────────────────────
+        function _hwfitBadge(level) {
+            const map = {
+                perfect: ['✅', 'text-emerald-400'], good: ['✅', 'text-emerald-400'],
+                marginal: ['⚠️', 'text-amber-400'], too_tight: ['⚠️', 'text-amber-400'],
+                no_fit: ['❌', 'text-red-400'],
+            };
+            const [icon, cls] = map[level] || ['•', 'text-slate-400'];
+            return `<span class="${cls}">${icon} ${escapeHtml(level)}</span>`;
+        }
+
+        function _hwfitRow(m) {
+            const row = document.createElement('div');
+            row.className = 'flex items-center gap-3 bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5';
+            row.innerHTML = `
+                <div class="flex-1 min-w-0">
+                    <div class="text-slate-200 text-sm font-medium truncate">${escapeHtml(m.name)}</div>
+                    <div class="text-xs text-slate-500">${escapeHtml(m.quant)} · ~${m.weights_gb}GB · ${m.total_gb}GB @ ${m.ctx} ctx · ~${m.tokens_s} tok/s</div>
+                </div>
+                <div class="text-xs text-right whitespace-nowrap">
+                    <div>${_hwfitBadge(m.fit_level)}</div>
+                    <div class="text-slate-500">${escapeHtml(m.run_mode)}</div>
+                </div>`;
+            const btn = document.createElement('button');
+            btn.className = 'text-xs text-indigo-300 hover:text-indigo-200 border border-slate-700 rounded-lg px-3 py-1.5';
+            btn.innerHTML = '<i class="fas fa-scroll mr-1"></i> Recipe';
+            btn.onclick = () => showHwfitRecipe(m.name);
+            row.appendChild(btn);
+            return row;
+        }
+
+        async function loadHwfit() {
+            const wrap = $id('hwfit-list');
+            const card = $id('hwfit-card');
+            const status = $id('hwfit-status');
+            if (!wrap) return;
+            if (status) status.textContent = 'Probing…';
+            const ctx = ($id('hwfit-ctx') && $id('hwfit-ctx').value) || '8192';
+            const fitOnly = $id('hwfit-fit-only') && $id('hwfit-fit-only').checked ? '1' : '0';
+            try {
+                const q = new URLSearchParams({ ctx, fit_only: fitOnly });
+                const r = await fetch('/api/hwfit?' + q.toString());
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                const { report, models } = await r.json();
+                if (card) card.textContent = report || '(hardware probe unavailable)';
+                wrap.innerHTML = '';
+                if (!models || models.length === 0) {
+                    if (status) status.textContent = 'No installed Ollama models found (or nothing fits).';
+                    return;
+                }
+                if (status) status.textContent = models.length + ' model' + (models.length === 1 ? '' : 's') + ' ranked by fit';
+                models.forEach(m => wrap.appendChild(_hwfitRow(m)));
+            } catch (e) {
+                if (status) status.textContent = 'Error: ' + e.message;
+            }
+        }
+
+        async function showHwfitRecipe(name) {
+            const panel = $id('hwfit-recipe');
+            const body = $id('hwfit-recipe-body');
+            const notes = $id('hwfit-recipe-notes');
+            if (!panel) return;
+            panel.classList.remove('hidden');
+            if (body) body.textContent = 'Loading…';
+            if (notes) notes.innerHTML = '';
+            const ctx = ($id('hwfit-ctx') && $id('hwfit-ctx').value) || '8192';
+            try {
+                const r = await fetch('/api/hwfit/recipe', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ model: name, ctx: parseInt(ctx, 10) }),
+                });
+                const data = await r.json();
+                if (!r.ok || !data.ok) throw new Error(data.error || ('HTTP ' + r.status));
+                if (body) body.textContent = data.recipe || '';
+                if (notes) notes.innerHTML = (data.notes || []).map(n => `<div>• ${escapeHtml(n)}</div>`).join('');
+                panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            } catch (e) {
+                if (body) body.textContent = 'Error: ' + e.message;
+            }
+        }
+
+        // ── Documents (living docs with version history) ───────────────
+        let _docCurrent = null;        // currently-open document (with versions)
+        let _docPreviewOn = false;
+
+        async function loadDocuments() {
+            const wrap = $id('documents-list');
+            const status = $id('documents-status');
+            if (!wrap) return;
+            if (status) status.textContent = 'Loading…';
+            const q = (($id('doc-search') && $id('doc-search').value) || '').trim();
+            const sort = ($id('doc-sort') && $id('doc-sort').value) || 'recent';
+            const archived = $id('doc-show-archived') && $id('doc-show-archived').checked ? '1' : '0';
+            try {
+                const params = new URLSearchParams({ sort, archived });
+                if (q) params.set('q', q);
+                const r = await fetch('/api/documents?' + params.toString());
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                const { documents } = await r.json();
+                wrap.innerHTML = '';
+                if (!documents || documents.length === 0) {
+                    if (status) status.textContent = 'No documents. Click New, or ask the agent.';
+                    return;
+                }
+                if (status) status.textContent = documents.length + ' document' + (documents.length === 1 ? '' : 's');
+                documents.forEach(d => wrap.appendChild(_docRow(d)));
+            } catch (e) {
+                if (status) status.textContent = 'Error: ' + e.message;
+            }
+        }
+
+        function _docRow(d) {
+            const el = document.createElement('button');
+            const active = _docCurrent && _docCurrent.id === d.id;
+            el.className = 'w-full text-left bg-slate-900 border rounded-xl px-3 py-2.5 transition-all '
+                + (active ? 'border-indigo-500' : 'border-slate-800 hover:border-slate-700');
+            const when = d.updated ? new Date(d.updated * 1000).toLocaleString() : '';
+            el.innerHTML = `
+                <div class="flex items-center gap-2">
+                    <div class="text-slate-200 text-sm font-medium truncate flex-1">${escapeHtml(d.title || '(untitled)')}</div>
+                    ${d.archived ? '<span class="text-[10px] text-amber-400">archived</span>' : ''}
+                </div>
+                <div class="text-[11px] text-slate-500 truncate">${escapeHtml(d.preview || '')}</div>
+                <div class="text-[10px] text-slate-600 mt-1">${escapeHtml(d.language || '')} · v${d.version_count} · ${escapeHtml(when)}</div>`;
+            el.onclick = () => openDocument(d.id);
+            return el;
+        }
+
+        async function openDocument(id) {
+            try {
+                const r = await fetch('/api/documents/' + encodeURIComponent(id));
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                const { document: doc } = await r.json();
+                _docCurrent = doc;
+                _showEditor(doc);
+                loadDocuments();   // refresh active-row highlight
+            } catch (e) {
+                const s = $id('doc-save-status'); if (s) s.textContent = 'Open failed: ' + e.message;
+            }
+        }
+
+        function _showEditor(doc) {
+            const ed = $id('doc-editor');
+            if (ed) ed.classList.remove('hidden');
+            _docPreviewOn = false;
+            $id('doc-content').classList.remove('hidden');
+            $id('doc-preview').classList.add('hidden');
+            const pbtn = $id('doc-preview-btn');
+            if (pbtn) pbtn.innerHTML = '<i class="fas fa-eye mr-1"></i> Preview';
+            $id('doc-title').value = doc ? (doc.title || '') : '';
+            $id('doc-language').value = doc ? (doc.language || '') : '';
+            $id('doc-content').value = doc ? (doc.content || '') : '';
+            const meta = $id('doc-meta');
+            if (meta) meta.textContent = (doc && doc.id)
+                ? `v${doc.version_count} · ${(doc.content || '').length} chars`
+                : 'new document';
+            const arch = $id('doc-archive-btn');
+            if (arch) arch.innerHTML = (doc && doc.archived)
+                ? '<i class="fas fa-box-open mr-1"></i> Unarchive'
+                : '<i class="fas fa-box-archive mr-1"></i> Archive';
+            _renderDocVersions(doc);
+            const s = $id('doc-save-status'); if (s) s.textContent = '';
+        }
+
+        function _renderDocVersions(doc) {
+            const sel = $id('doc-version');
+            if (!sel) return;
+            const versions = (doc && doc.versions) || [];
+            if (versions.length === 0) { sel.innerHTML = '<option value="">—</option>'; return; }
+            sel.innerHTML = versions.slice().reverse().map(v => {
+                const when = v.ts ? new Date(v.ts * 1000).toLocaleString() : '';
+                const lbl = `v${v.version_number}` + (v.summary ? ' — ' + v.summary : '') + (when ? '  (' + when + ')' : '');
+                return `<option value="${v.version_number}">${escapeHtml(lbl)}</option>`;
+            }).join('');
+        }
+
+        function newDocument() {
+            _docCurrent = null;
+            _showEditor(null);
+            const c = $id('doc-content'); if (c) c.focus();
+        }
+
+        async function saveDocument() {
+            const title = $id('doc-title').value.trim();
+            const language = $id('doc-language').value.trim();
+            const content = $id('doc-content').value;
+            const s = $id('doc-save-status');
+            if (!content.trim() && !title) { if (s) s.textContent = 'Nothing to save.'; return; }
+            if (s) s.textContent = 'Saving…';
+            try {
+                const editing = _docCurrent && _docCurrent.id;
+                const url = editing ? '/api/documents/update' : '/api/documents/create';
+                const body = editing ? { id: _docCurrent.id, content, title, language }
+                                     : { content, title, language };
+                const r = await fetch(url, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                const data = await r.json();
+                if (!r.ok || !data.ok) throw new Error(data.error || ('HTTP ' + r.status));
+                _docCurrent = data.document;
+                _showEditor(_docCurrent);
+                if (s) s.textContent = 'Saved · v' + _docCurrent.version_count;
+                loadDocuments();
+            } catch (e) {
+                if (s) s.textContent = 'Error: ' + e.message;
+            }
+        }
+
+        async function _docAction(action, body, okMsg) {
+            const s = $id('doc-save-status');
+            try {
+                const r = await fetch('/api/documents/' + action, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                const data = await r.json();
+                if (!r.ok || !data.ok) throw new Error(data.error || ('HTTP ' + r.status));
+                if (s && okMsg) s.textContent = okMsg;
+                return data;
+            } catch (e) {
+                if (s) s.textContent = 'Error: ' + e.message;
+                return null;
+            }
+        }
+
+        async function deleteDocument() {
+            if (!_docCurrent || !_docCurrent.id) { const ed = $id('doc-editor'); if (ed) ed.classList.add('hidden'); return; }
+            if (!confirm('Delete this document? This cannot be undone.')) return;
+            const data = await _docAction('delete', { id: _docCurrent.id });
+            if (data) {
+                _docCurrent = null;
+                const ed = $id('doc-editor'); if (ed) ed.classList.add('hidden');
+                loadDocuments();
+            }
+        }
+
+        async function archiveDocument() {
+            if (!_docCurrent || !_docCurrent.id) return;
+            const data = await _docAction('archive', { id: _docCurrent.id });
+            if (data && data.document) { _docCurrent = data.document; _showEditor(_docCurrent); loadDocuments(); }
+        }
+
+        async function restoreDocVersion() {
+            if (!_docCurrent || !_docCurrent.id) return;
+            const sel = $id('doc-version');
+            const v = sel && parseInt(sel.value, 10);
+            if (!v) return;
+            const data = await _docAction('restore', { id: _docCurrent.id, version: v }, 'Restored v' + v);
+            if (data && data.document) { _docCurrent = data.document; _showEditor(_docCurrent); loadDocuments(); }
+        }
+
+        function toggleDocPreview() {
+            _docPreviewOn = !_docPreviewOn;
+            const ta = $id('doc-content');
+            const pv = $id('doc-preview');
+            const btn = $id('doc-preview-btn');
+            if (!ta || !pv) return;
+            if (_docPreviewOn) {
+                const text = ta.value || '';
+                pv.innerHTML = (window.marked && window.marked.parse) ? window.marked.parse(text) : escapeHtml(text);
+                ta.classList.add('hidden'); pv.classList.remove('hidden');
+                if (btn) btn.innerHTML = '<i class="fas fa-pen mr-1"></i> Edit';
+            } else {
+                pv.classList.add('hidden'); ta.classList.remove('hidden');
+                if (btn) btn.innerHTML = '<i class="fas fa-eye mr-1"></i> Preview';
+            }
+        }
+
+        async function tidyDocuments() {
+            const data = await _docAction('tidy', {});
+            if (!data) return;
+            const junk = (data.junk || []).length;
+            const dups = (data.duplicates || []).length;
+            const status = $id('documents-status');
+            if (junk + dups === 0) { if (status) status.textContent = 'Nothing to tidy — looks clean.'; return; }
+            if (confirm(`Tidy found ${junk} junk + ${dups} duplicate doc(s). Delete them?`)) {
+                const applied = await _docAction('tidy', { apply: true });
+                if (applied) {
+                    if (_docCurrent && (applied.removed || []).includes(_docCurrent.id)) {
+                        _docCurrent = null;
+                        const ed = $id('doc-editor'); if (ed) ed.classList.add('hidden');
+                    }
+                    loadDocuments();
+                }
+            }
+        }
+
         // Refresh when user switches to Change Mode tab; also on first load.
         const _origSwitchTab = switchTab;
         switchTab = function(tabId) {
@@ -1837,6 +2401,9 @@
             if (tabId === 'compare') { renderCompareModels(); loadCompareHistory(); }
             if (tabId === 'skills') loadSkills();
             if (tabId === 'research') loadResearch();
+            if (tabId === 'notes') loadNotes();
+            if (tabId === 'hardware') loadHwfit();
+            if (tabId === 'documents') loadDocuments();
         };
 
         // ── Logs tab: poll /api/logs/tail and render structured events ──

@@ -107,6 +107,26 @@ COMPARE_MAX_MODELS = 4
 # becomes an error slot instead of blocking the whole comparison.
 COMPARE_TIMEOUT_S = 120
 
+# ── Notes (Keep-style notes + checklists, v6 — ported from odysseus) ────
+# Max notes kept in the JSONL store (oldest trimmed past this). Notes are an
+# explicit feature (UI tab + add_note/list_notes/… agent tools), not a virtual
+# model — no feature flag needed.
+NOTES_MAX_ENTRIES = 500
+
+# ── Cookbook / hw-fit (will-this-model-run, v6 — ported from odysseus) ──
+# Default context length used for the KV-cache memory estimate when a fit
+# check doesn't specify one. Plain tunable (UI tab + hardware_info/model_fit/
+# recommend_models agent tools) — not a virtual model, no feature flag.
+HWFIT_DEFAULT_CTX = 8192
+
+# ── Documents (living docs + version history, v6 — ported from odysseus) ─
+# Max documents kept in the JSONL store (oldest trimmed past this) and max
+# versions kept per document (origin + most-recent trimmed past this). The
+# Documents editor is an explicit feature (UI tab + create_document/… agent
+# tools), not a virtual model — no feature flag needed.
+DOCUMENTS_MAX_ENTRIES = 200
+DOCUMENTS_MAX_VERSIONS = 50
+
 # ── Model Provider Configuration ───────────────────────────────
 # Primary is tried first; on token-exhaust / error / 401 we fall
 # back to the local provider.
@@ -190,6 +210,13 @@ AGENT_PROFILES = {
             "save_lesson", "learn_from_file", "learn_from_url", "update_self",
             # v5 — self-evolving skills + deep research
             "save_skill", "list_skills", "delete_skill", "deep_research",
+            # v6 — Keep-style notes + checklists (to-do lists)
+            "add_note", "list_notes", "update_note", "complete_note_item", "delete_note",
+            # v6 — Cookbook / hw-fit: will this model run on my box?
+            "hardware_info", "model_fit", "recommend_models",
+            # v6 — Documents: living docs with version history
+            "create_document", "list_documents", "get_document",
+            "update_document", "delete_document",
         ],
         "verify": "off",  # Slice 5 enables CoVe wrapper when set to "high"
     },

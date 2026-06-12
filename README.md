@@ -20,11 +20,49 @@
 >   (`data/research/`) are now listed in a **Research** tab and open in place,
 >   served via a path-traversal-guarded `/data/research/` route (`.html`/`.md`
 >   only) + `GET /api/research`.
+> - **Notes & checklists** — a Google-Keep-style **Notes** tab: jot text notes
+>   or checklists (to-do lists), pin / archive / label / reorder them, and tick
+>   items off. The agent can read & write the same store via the `add_note`,
+>   `list_notes`, `update_note`, `complete_note_item`, `delete_note` tools.
+>   Adapted from odysseus `note_routes.py`, re-built single-user + synchronous +
+>   JSONL (no DB/auth/reminder-dispatch). Backed by `GET /api/notes` +
+>   `POST /api/notes/{create,update,delete,pin,archive,item-toggle,reorder}`;
+>   persists to `data/notes/notes.jsonl`, cap `NOTES_MAX_ENTRIES` (500). odysseus
+>   "tasks" are scheduled jobs — already covered by **Daily Tasks** — so a
+>   checklist note IS the to-do list. See [core/notes.py](core/notes.py).
+> - **Hardware fit (Cookbook / hw-fit)** — a **Hardware** tab that answers
+>   "will this model run on my box?": it probes RAM / GPU / VRAM (reusing
+>   `core/hardware.py`), then ranks every **installed** Ollama model by fit —
+>   run-mode (`gpu` / `cpu_offload` / `cpu_only` / `no_fit`), memory headroom,
+>   a rough tokens/s, and a copy-pasteable `ollama run` recipe. Grounded in the
+>   **real on-disk weight size** Ollama already reports (not an estimate). The
+>   agent gets the same via `hardware_info`, `model_fit`, `recommend_models`.
+>   Adapted from odysseus `services/hwfit` — dropped its SSH/remote-host probing
+>   and the 3.3k-line download/serve lifecycle (out of scope, single-user/local).
+>   Backed by `GET /api/hwfit` + `POST /api/hwfit/recipe`; tunable
+>   `HWFIT_DEFAULT_CTX` (8192). See [core/hwfit.py](core/hwfit.py).
+> - **Documents editor** — a **Documents** tab for *living documents*: a
+>   markdown editor with a live preview, a searchable / sortable library, and
+>   **version history** — every save snapshots a version (rapid re-saves within
+>   60s coalesce so the history stays clean), and any earlier version can be
+>   restored (copied forward as a new version). Archive / delete / one-click
+>   **tidy** (flags throwaway-titled junk + exact duplicates; dry-run by
+>   default). The agent reads & writes the same store via `create_document`,
+>   `list_documents`, `get_document`, `update_document`, `delete_document`.
+>   Adapted from odysseus `document_routes.py` — re-built single-user +
+>   synchronous + JSONL (dropped owner/auth scoping, import-PDF, and the heavy
+>   PDF-form / e-signature / vision-annotation routes). Backed by
+>   `GET /api/documents` + `GET /api/documents/{id}` +
+>   `POST /api/documents/{create,update,patch,delete,archive,restore,tidy}`;
+>   persists to `data/documents/documents.jsonl`, caps `DOCUMENTS_MAX_ENTRIES`
+>   (200) / `DOCUMENTS_MAX_VERSIONS` (50). See [core/documents.py](core/documents.py).
 > - **Polish** — `core/skills.py:slugify()` now transliterates Unicode →
 >   readable ASCII (NFKD fold + `đ/Đ` special-case), so Vietnamese titles get
 >   clean slugs (`Cách tạo tệp` → `cach-tao-tep`) instead of mangled ones.
-> - **Tests** — now **251** pytest tests (+15 Compare; +1 Vietnamese slugify;
->   +9 Skills/Research routes: list, delete, report listing, guarded serving).
+> - **Tests** — now **401** pytest tests (+15 Compare; +1 Vietnamese slugify;
+>   +9 Skills/Research routes; +42 Notes: store, agent tools, and REST routes;
+>   +53 hw-fit: fit math, probe, catalogue, agent tools, and REST routes;
+>   +55 Documents: store, version history, tidy, agent tools, and REST routes).
 >
 > **v5 (2026-06) — odysseus-grade depth + real speculative decoding.**
 > Ports the highest-value subsystems from

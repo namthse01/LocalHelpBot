@@ -33,6 +33,34 @@ Pick by what the task needs, not by what sounds cool. The router (`auto-agent`) 
 > - **Research** (v6 UI) — **Research** tab + `GET /api/research`; reports are
 >   served from `data/research/` via a path-traversal-guarded `/data/research/`
 >   route (`.html`/`.md` only). Produced by the `research-agent` virtual model.
+> - **Notes** (v6) — Google-Keep-style notes + checklists. **Notes** UI tab +
+>   `GET /api/notes` and `POST /api/notes/{create,update,delete,pin,archive,
+>   item-toggle,reorder}`. The same store also backs five agent tools
+>   (`add_note`, `list_notes`, `update_note`, `complete_note_item`,
+>   `delete_note`) available to the `main` profile, so `auto-agent` can manage
+>   notes on request. A checklist note is the "to-do list" — distinct from
+>   **Daily Tasks** (scheduled jobs) and the `task` sub-agent tool.
+>   See [core/notes.py](core/notes.py).
+> - **Hardware fit** (v6, Cookbook / hw-fit) — "will this model run on my box?"
+>   **Hardware** UI tab + `GET /api/hwfit` (probe + ranked installed models) and
+>   `POST /api/hwfit/recipe` (`{model, ctx?}` → serve recipe). Probes RAM/GPU/VRAM
+>   via `core/hardware.py`, then scores each installed Ollama model (run-mode,
+>   headroom, rough tokens/s) using its real on-disk weight size. The same engine
+>   backs three `main`-profile agent tools: `hardware_info`, `model_fit`,
+>   `recommend_models`. Read-only; no orchestrator/agent-loop routing.
+>   See [core/hwfit.py](core/hwfit.py).
+> - **Documents** (v6 UI) — living documents with version history. **Documents**
+>   UI tab (markdown editor + live preview + searchable/sortable library +
+>   version restore) + `GET /api/documents` (library: `?q`/`?language`/`?sort`/
+>   `?archived`), `GET /api/documents/{id}` (full content + versions), and
+>   `POST /api/documents/{create,update,patch,delete,archive,restore,tidy}`.
+>   Every save snapshots a version (rapid re-saves within 60s coalesce); `tidy`
+>   flags throwaway-titled junk + exact duplicates (dry-run unless `apply`). The
+>   same store (`core/documents.py`, JSONL) backs five `main`-profile agent
+>   tools: `create_document`, `list_documents`, `get_document`,
+>   `update_document`, `delete_document`. Adapted from odysseus
+>   `document_routes.py` (dropped owner/auth scoping + PDF-form/e-sign/VL
+>   routes). See [core/documents.py](core/documents.py).
 
 ---
 
@@ -94,7 +122,7 @@ Virtual models pick from these per-specialist profiles in `config.py:AGENT_PROFI
 
 | Profile      | Tools available                       | `verify` mode | Notes |
 |--------------|---------------------------------------|---------------|-------|
-| `main`       | Full registry (24 tools incl. plugins) | `off`         | Default. Set `"verify": "high"` to enable CoVe on write-heavy tasks. |
+| `main`       | Full registry (~65 tools incl. plugins) | `off`         | Default. Set `"verify": "high"` to enable CoVe on write-heavy tasks. Includes the `add_note`/`list_notes`/… Notes tools, `hardware_info`/`model_fit`/`recommend_models`, and the `create_document`/`list_documents`/… Documents tools. |
 | `researcher` | `read_file`, `list_dir`, `search_web`, `fetch_url`, `query_rag` | `off` | Synthesises across multiple sources. |
 | `coder`      | `read_file`, `list_dir`, `search_web` | `off`         | Read-only code analysis. Won't edit files. |
 | `summarizer` | none                                  | `off`         | Pure prose compression. Used by Discord output. |

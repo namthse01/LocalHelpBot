@@ -40,6 +40,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+# Raw conversation turns kept per session (newest last). Capped so the
+# in-memory buffer + the replayed prompt stay bounded; the context engine's
+# compaction is the second line of defence for very long threads. 24 ≈ 12
+# user/assistant exchanges, comfortably covering normal follow-up chains.
+MAX_HISTORY_MESSAGES = 24
+
 # ───────────────────────────────────────────────────────────────────────
 # Session record
 # ───────────────────────────────────────────────────────────────────────
@@ -89,6 +95,14 @@ class Session:
     last_short_answer: Optional[str] = None
     last_numeric_value: Optional[float] = None
 
+    # Raw conversation turns ({"role","content"}) for THIS session, newest
+    # last, capped to MAX_HISTORY_MESSAGES. The Ollama wire protocol is
+    # stateless and our Web UI sends only the latest user message, so without
+    # this the model would see no prior turns. The orchestrator replays it as
+    # the model's conversation history for top-level runs. In-memory only —
+    # the JSONL crash log stores metadata events, not full message text.
+    history: List[Dict[str, str]] = field(default_factory=list)
+
     # ── mutators ────────────────────────────────────────────────────
     def note_user_goal(self, msg: str) -> None:
         if self.goal:
@@ -136,6 +150,21 @@ class Session:
                 self.last_short_answer = cleaned[-200:]
         if numeric is not None:
             self.last_numeric_value = float(numeric)
+
+    def record_message(self, role: str, content: str) -> None:
+        """Append one raw turn to the in-memory history (capped).
+
+        No-ops on empty role/content so a blank assistant answer never
+        pollutes the buffer. Oldest turns are dropped once the buffer
+        exceeds MAX_HISTORY_MESSAGES.
+        """
+        role = (role or "").strip()
+        text = (content or "").strip()
+        if not role or not text:
+            return
+        self.history.append({"role": role, "content": text})
+        if len(self.history) > MAX_HISTORY_MESSAGES:
+            self.history = self.history[-MAX_HISTORY_MESSAGES:]
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

@@ -483,6 +483,111 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"reports": reports}).encode())
             return
 
+        if self.path == "/api/notes" or self.path.startswith("/api/notes?"):
+            # List notes/checklists for the Notes tab. ?archived=1 to include
+            # archived; ?label=X to filter by group; ?q=… to search.
+            from urllib.parse import urlparse, parse_qs
+            from core.notes import get_notes_store
+            qs = parse_qs(urlparse(self.path).query)
+            include_archived = (qs.get("archived", ["0"])[0] or "0").lower() in ("1", "true", "yes")
+            label = (qs.get("label", [""])[0] or "").strip() or None
+            query = (qs.get("q", [""])[0] or "").strip() or None
+            try:
+                store = get_notes_store()
+                notes = [n.to_dict() for n in store.list(
+                    include_archived=include_archived, label=label, query=query)]
+                labels = store.labels()
+            except Exception as e:  # noqa: BLE001
+                log.warning(f"notes list failed: {e}")
+                notes, labels = [], []
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({"notes": notes, "labels": labels}).encode())
+            return
+
+        if self.path == "/api/hwfit" or self.path.startswith("/api/hwfit?"):
+            # Cookbook / hw-fit: probe the box + rank installed models by fit.
+            # ?ctx=N overrides the KV-cache context length; ?fit_only=1 drops
+            # models that don't fit.
+            from urllib.parse import urlparse, parse_qs
+            from core import hwfit
+            qs = parse_qs(urlparse(self.path).query)
+            try:
+                ctx = int(qs.get("ctx", [""])[0]) if qs.get("ctx", [""])[0] else None
+            except ValueError:
+                ctx = None
+            fit_only = (qs.get("fit_only", ["0"])[0] or "0").lower() in ("1", "true", "yes")
+            try:
+                hw = hwfit.probe()
+                models = hwfit.fetch_installed_models()
+                rows = hwfit.rank_models(hw, models, ctx)
+                if fit_only:
+                    rows = [r for r in rows if r["fits"]]
+                hw_public = {k: v for k, v in hw.items() if not k.startswith("_")}
+                payload = {"hardware": hw_public, "report": hwfit.hardware_report(hw),
+                           "models": rows}
+            except Exception as e:  # noqa: BLE001
+                log.warning(f"hwfit failed: {e}")
+                payload = {"hardware": {}, "report": "", "models": [], "error": str(e)}
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps(payload).encode())
+            return
+
+        if self.path == "/api/documents" or self.path.startswith("/api/documents?"):
+            # Documents library. ?q= search (AND of terms); ?language= facet;
+            # ?archived=1 to include archived; ?sort=recent|oldest|edits|alpha.
+            from urllib.parse import urlparse, parse_qs
+            from core.documents import get_documents_store
+            qs = parse_qs(urlparse(self.path).query)
+            include_archived = (qs.get("archived", ["0"])[0] or "0").lower() in ("1", "true", "yes")
+            query = (qs.get("q", [""])[0] or "").strip() or None
+            language = (qs.get("language", [""])[0] or "").strip() or None
+            sort = (qs.get("sort", ["recent"])[0] or "recent").strip()
+            try:
+                store = get_documents_store()
+                docs = [d.summary_dict() for d in store.list(
+                    include_archived=include_archived, query=query,
+                    language=language, sort=sort)]
+                languages = store.languages()
+            except Exception as e:  # noqa: BLE001
+                log.warning(f"documents list failed: {e}")
+                docs, languages = [], []
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({"documents": docs, "languages": languages}).encode())
+            return
+
+        if self.path.startswith("/api/documents/"):
+            # One document with full content + version history.
+            from urllib.parse import urlparse, unquote
+            from core.documents import get_documents_store
+            doc_id = unquote(urlparse(self.path).path[len("/api/documents/"):].strip("/"))
+            doc = None
+            try:
+                doc = get_documents_store().get(doc_id)
+            except Exception as e:  # noqa: BLE001
+                log.warning(f"document get failed: {e}")
+            if doc is None:
+                self.send_response(404)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "document not found"}).encode())
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({"document": doc.to_dict()}).encode())
+            return
+
         if self.path == "/api/tags":
             body = _tags_with_virtual()
             self.send_response(200)
@@ -829,6 +934,200 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(json.dumps({"ok": ok}).encode())
+            return
+
+        if path.startswith("/api/notes/"):
+            # Keep-style notes board. Sub-actions: create/update/delete/pin/
+            # archive/item-toggle/reorder. Each returns {ok, note?} and uses the
+            # NotesStore singleton (also backs the add_note/… agent tools).
+            from core.notes import get_notes_store
+            action = path[len("/api/notes/"):].strip("/")
+            store = get_notes_store()
+            status, body = 200, {"ok": False}
+            try:
+                if action == "create":
+                    note = store.add(
+                        title=(payload.get("title") or ""),
+                        content=(payload.get("content") or ""),
+                        items=payload.get("items"),
+                        note_type=(payload.get("note_type") or None),
+                        label=(payload.get("label") or ""),
+                        color=(payload.get("color") or ""),
+                        due_date=(payload.get("due_date") or ""),
+                        pinned=bool(payload.get("pinned") or False),
+                        source="ui",
+                    )
+                    body = {"ok": True, "note": note.to_dict()}
+                elif action == "update":
+                    nid = (payload.get("id") or "").strip()
+                    fields = {k: payload[k] for k in (
+                        "title", "content", "items", "note_type", "label",
+                        "color", "due_date", "pinned", "archived") if k in payload}
+                    note = store.update(nid, **fields) if nid else None
+                    if note is None:
+                        status, body = 404, {"ok": False, "error": "note not found"}
+                    else:
+                        body = {"ok": True, "note": note.to_dict()}
+                elif action == "delete":
+                    ok = store.delete((payload.get("id") or "").strip())
+                    status, body = (200 if ok else 404), {"ok": ok}
+                elif action == "pin":
+                    note = store.toggle_pin((payload.get("id") or "").strip())
+                    if note is None:
+                        status, body = 404, {"ok": False, "error": "note not found"}
+                    else:
+                        body = {"ok": True, "note": note.to_dict()}
+                elif action == "archive":
+                    note = store.toggle_archive((payload.get("id") or "").strip())
+                    if note is None:
+                        status, body = 404, {"ok": False, "error": "note not found"}
+                    else:
+                        body = {"ok": True, "note": note.to_dict()}
+                elif action == "item-toggle":
+                    nid = (payload.get("id") or "").strip()
+                    try:
+                        idx = int(payload.get("index"))
+                    except (TypeError, ValueError):
+                        idx = -1
+                    note = store.toggle_item(nid, idx) if nid else None
+                    if note is None:
+                        status, body = 404, {"ok": False, "error": "note or item not found"}
+                    else:
+                        body = {"ok": True, "note": note.to_dict()}
+                elif action == "reorder":
+                    ids = payload.get("ids") or []
+                    if not isinstance(ids, list):
+                        ids = []
+                    moved = store.reorder([str(i) for i in ids])
+                    body = {"ok": True, "moved": moved}
+                else:
+                    status, body = 404, {"ok": False, "error": f"unknown notes action '{action}'"}
+            except Exception as e:  # noqa: BLE001
+                log.error(f"notes {action} failed: {e}")
+                status, body = 500, {"ok": False, "error": str(e)}
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps(body).encode())
+            return
+
+        if path == "/api/hwfit/recipe":
+            # Cookbook / hw-fit: serve recipe for one installed model.
+            # Body: {model: "<name>", ctx?: int} → {ok, recipe, analysis, notes}.
+            from core import hwfit
+            name = (payload.get("model") or payload.get("name") or "").strip()
+            try:
+                ctx = int(payload["ctx"]) if payload.get("ctx") is not None else None
+            except (TypeError, ValueError):
+                ctx = None
+            status, body = 200, {"ok": False}
+            if not name:
+                status, body = 400, {"ok": False, "error": "model is required"}
+            else:
+                try:
+                    hw = hwfit.probe()
+                    models = hwfit.fetch_installed_models()
+                    match = next(
+                        (m for m in models
+                         if (m.get("name") or m.get("model")) == name), None)
+                    if match is None:
+                        match = next(
+                            (m for m in models
+                             if (m.get("name") or m.get("model") or "").split(":")[0]
+                             == name.split(":")[0]), None)
+                    if match is None:
+                        status, body = 404, {"ok": False, "error": "model not installed"}
+                    else:
+                        rec = hwfit.serve_recipe(match, hw, ctx)
+                        body = {"ok": True, **rec}
+                except Exception as e:  # noqa: BLE001
+                    log.error(f"hwfit recipe failed: {e}")
+                    status, body = 500, {"ok": False, "error": str(e)}
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps(body).encode())
+            return
+
+        if path.startswith("/api/documents/"):
+            # Documents store. Sub-actions: create/update/patch/delete/archive/
+            # restore/tidy. Each returns {ok, document?} and uses the
+            # DocumentsStore singleton (also backs the create_document/… agent
+            # tools + the Documents UI tab).
+            from core.documents import get_documents_store
+            action = path[len("/api/documents/"):].strip("/")
+            store = get_documents_store()
+            status, body = 200, {"ok": False}
+            try:
+                if action == "create":
+                    doc = store.add(
+                        title=(payload.get("title") or ""),
+                        content=(payload.get("content") or ""),
+                        language=(payload.get("language") or ""),
+                        source="ui",
+                    )
+                    body = {"ok": True, "document": doc.to_dict()}
+                elif action == "update":
+                    did = (payload.get("id") or "").strip()
+                    doc = store.update(
+                        did,
+                        content=payload.get("content"),
+                        summary=(payload.get("summary") or ""),
+                        title=payload.get("title"),
+                        language=payload.get("language"),
+                        source="ui",
+                    ) if did else None
+                    if doc is None:
+                        status, body = 404, {"ok": False, "error": "document not found"}
+                    else:
+                        body = {"ok": True, "document": doc.to_dict()}
+                elif action == "patch":
+                    # Metadata-only edit (title/language) — no new version.
+                    did = (payload.get("id") or "").strip()
+                    doc = store.update(
+                        did,
+                        title=payload.get("title"),
+                        language=payload.get("language"),
+                        source="ui",
+                    ) if did else None
+                    if doc is None:
+                        status, body = 404, {"ok": False, "error": "document not found"}
+                    else:
+                        body = {"ok": True, "document": doc.to_dict()}
+                elif action == "delete":
+                    ok = store.delete((payload.get("id") or "").strip())
+                    status, body = (200 if ok else 404), {"ok": ok}
+                elif action == "archive":
+                    doc = store.toggle_archive((payload.get("id") or "").strip())
+                    if doc is None:
+                        status, body = 404, {"ok": False, "error": "document not found"}
+                    else:
+                        body = {"ok": True, "document": doc.to_dict()}
+                elif action == "restore":
+                    did = (payload.get("id") or "").strip()
+                    try:
+                        vnum = int(payload.get("version"))
+                    except (TypeError, ValueError):
+                        vnum = -1
+                    doc = store.restore_version(did, vnum) if did and vnum > 0 else None
+                    if doc is None:
+                        status, body = 404, {"ok": False, "error": "document or version not found"}
+                    else:
+                        body = {"ok": True, "document": doc.to_dict()}
+                elif action == "tidy":
+                    body = {"ok": True, **store.tidy(apply=bool(payload.get("apply") or False))}
+                else:
+                    status, body = 404, {"ok": False, "error": f"unknown documents action '{action}'"}
+            except Exception as e:  # noqa: BLE001
+                log.error(f"documents {action} failed: {e}")
+                status, body = 500, {"ok": False, "error": str(e)}
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps(body).encode())
             return
 
         model = payload.get("model", "")

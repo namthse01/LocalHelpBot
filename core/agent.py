@@ -138,6 +138,16 @@ TOOL_FAMILIES: Dict[str, str] = {
     "save_skill": "rag", "list_skills": "rag", "delete_skill": "rag",
     # Clipboard
     "clipboard_read": "clipboard", "clipboard_write": "clipboard",
+    # Notes / checklists
+    "add_note": "notes", "list_notes": "notes", "update_note": "notes",
+    "complete_note_item": "notes", "delete_note": "notes",
+    # Hardware / model fit (Cookbook / hw-fit)
+    "hardware_info": "hardware", "model_fit": "hardware",
+    "recommend_models": "hardware",
+    # Documents (living docs + version history)
+    "create_document": "documents", "list_documents": "documents",
+    "get_document": "documents", "update_document": "documents",
+    "delete_document": "documents",
     # Meta
     "task": "delegate", "deep_research": "delegate",
 }

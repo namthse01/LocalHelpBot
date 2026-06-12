@@ -151,6 +151,27 @@ class AgentOrchestrator:
         # and OLLAMA_AUTO_PULL is on (gated by user permission).
         _maybe_pull_missing_model(profile.get("model", ""), stream_cb)
 
+        # ── Server-side conversation history (robust cross-turn memory) ──
+        # The Ollama protocol is stateless and our Web UI sends ONLY the
+        # latest user message, so the model would otherwise see no prior
+        # turns — follow-ups like "divide the two results above" break
+        # because the single-value <recent_exchange> hint can't carry both
+        # earlier answers. For a TOP-LEVEL run we replay this session's
+        # stored turns as the model's history. Sub-agents keep their
+        # isolated conversation (only T2 metadata is shared — see
+        # _make_task_tool), so we never replay into them.
+        top_level = parent_id is None
+        effective_history = list(conversation or [])
+        if top_level and sess.history:
+            client_sent_history = any(
+                isinstance(m, dict) and m.get("role") == "assistant"
+                for m in effective_history
+            )
+            if not client_sent_history:
+                # Thin client: prepend stored turns. The incoming latest
+                # user message stays last so it is treated as the prompt.
+                effective_history = list(sess.history) + effective_history
+
         # ── Assemble the system prompt + cleaned history ───────────
         base_prompt = profile["system_prompt"]
         if (profile.get("verify") or "off") == "high":
@@ -159,7 +180,7 @@ class AgentOrchestrator:
             session_id=session_id,
             base_prompt=base_prompt,
             tools=list(sub_registry),
-            history=conversation,
+            history=effective_history,
             runtime_block=self._runtime_block(agent_name),
             profile_name=agent_name,
             last_user_message=prompt,
@@ -250,6 +271,17 @@ class AgentOrchestrator:
             if stream_cb:
                 stream_cb({"type": "agent_end", "agent": agent_name, "session": session_id, "run_id": run_id})
             self.active_sessions.pop(run_id, None)
+
+        # Persist this turn so the NEXT (thin-client) request replays it as
+        # real conversation history. Top-level only — sub-agent turns stay
+        # isolated from the user-facing thread. Best-effort: a store hiccup
+        # must never change the answer we just produced.
+        if top_level:
+            try:
+                sess.record_message("user", prompt)
+                sess.record_message("assistant", result)
+            except Exception as e:  # noqa: BLE001
+                logger.debug("[history] record turn failed: %s", e)
 
         # v5: skill auto-extraction — only at the top level (not sub-agents),
         # gated by config.SKILLS_AUTO_EXTRACT, and only when the run was
